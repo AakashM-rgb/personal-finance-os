@@ -3,7 +3,7 @@ can never read or mutate another user's account by guessing an id."""
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -40,3 +40,13 @@ class AccountRepository:
 
     async def flush(self) -> None:
         await self._db.flush()
+
+    async def adjust_balance(self, account_id: uuid.UUID, delta_minor: int) -> None:
+        """Atomically applies `balance_minor += delta_minor` at the database
+        level (never read-modify-write in Python), so concurrent transactions
+        touching the same account can never lose an update."""
+        await self._db.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(balance_minor=Account.balance_minor + delta_minor)
+        )

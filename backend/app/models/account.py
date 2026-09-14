@@ -11,12 +11,11 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, Boolean, ForeignKey, String
-from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from app.models.base import TimestampMixin, UUIDPrimaryKeyMixin
+from app.models.base import TimestampMixin, UUIDPrimaryKeyMixin, str_enum_column
 
 if TYPE_CHECKING:
     from app.models.credit_card_details import CreditCardDetails
@@ -43,7 +42,7 @@ class Account(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     type: Mapped[AccountType] = mapped_column(
-        SAEnum(AccountType, name="account_type", native_enum=False, length=20),
+        str_enum_column(AccountType, name="account_type"),
         nullable=False,
     )
     balance_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)

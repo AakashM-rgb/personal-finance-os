@@ -1,11 +1,31 @@
 """Shared mixins for ORM models."""
 
+import enum
 import uuid
 from datetime import UTC, datetime
+from typing import TypeVar
 
 from sqlalchemy import DateTime, func
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
+
+_E = TypeVar("_E", bound=enum.Enum)
+
+
+def str_enum_column(enum_cls: type[_E], *, name: str, length: int = 20) -> SAEnum:
+    """A VARCHAR-backed enum column that stores each member's `.value`
+    ("bank_account") rather than SQLAlchemy's default of its `.name`
+    ("BANK_ACCOUNT") - without this, any raw SQL (check constraints,
+    reports, ad hoc queries) written against the lowercase values a client
+    actually sends would silently never match what's in the database."""
+    return SAEnum(
+        enum_cls,
+        name=name,
+        native_enum=False,
+        length=length,
+        values_callable=lambda cls: [member.value for member in cls],
+    )
 
 
 class UUIDPrimaryKeyMixin:

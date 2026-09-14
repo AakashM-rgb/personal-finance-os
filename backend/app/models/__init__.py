@@ -6,6 +6,7 @@ from app.models.audit_log import AuditLog
 from app.models.category import Category
 from app.models.credit_card_details import CreditCardDetails
 from app.models.session import Session
+from app.models.transaction import Transaction, TransactionType
 from app.models.user import User
 from app.models.user_settings import UserSettings
 
@@ -16,6 +17,8 @@ __all__ = [
     "Category",
     "CreditCardDetails",
     "Session",
+    "Transaction",
+    "TransactionType",
     "User",
     "UserSettings",
 ]

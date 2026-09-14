@@ -35,9 +35,17 @@ interface RequestOptions {
   body?: unknown;
   accessToken?: string | null;
   csrfToken?: string | null;
+  /** Sent as the `Idempotency-Key` header - lets a retried create be safely replayed. */
+  idempotencyKey?: string | null;
 }
 
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+interface Envelope<T> {
+  data: T;
+  error: ApiErrorBody | null;
+  meta: Record<string, unknown> | null;
+}
+
+async function performRequest<T>(path: string, options: RequestOptions): Promise<Envelope<T>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
 
   if (options.accessToken) {
@@ -45,6 +53,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
   if (options.csrfToken) {
     headers["x-csrf-token"] = options.csrfToken;
+  }
+  if (options.idempotencyKey) {
+    headers["Idempotency-Key"] = options.idempotencyKey;
   }
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -60,7 +71,21 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     throw new ApiError(response.status, envelope.error);
   }
 
-  return envelope.data as T;
+  return envelope as Envelope<T>;
+}
+
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const envelope = await performRequest<T>(path, options);
+  return envelope.data;
+}
+
+/** Like apiRequest, but also returns `meta` (e.g. pagination's total count). */
+export async function apiRequestWithMeta<T>(
+  path: string,
+  options: RequestOptions = {}
+): Promise<{ data: T; meta: Record<string, unknown> | null }> {
+  const envelope = await performRequest<T>(path, options);
+  return { data: envelope.data, meta: envelope.meta };
 }
 
 /** Reads a non-httpOnly cookie by name (used for the CSRF double-submit cookie). */
