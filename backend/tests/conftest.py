@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.core.database import Base, get_db
+from app.core.database import get_db
 from app.core.rate_limit import limiter
 from app.main import app
 
@@ -44,8 +44,19 @@ def _reset_rate_limits() -> None:
 async def _clean_database() -> AsyncGenerator[None, None]:
     yield
     async with test_engine.begin() as conn:
-        table_names = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
-        await conn.execute(text(f"TRUNCATE TABLE {table_names} RESTART IDENTITY CASCADE"))
+        # `categories` holds migration-seeded system defaults (user_id IS NULL)
+        # that must survive for the life of the test database. A blanket
+        # TRUNCATE ... CASCADE on `users` cascades into every table with an FK
+        # to it - including categories - regardless of whether "categories"
+        # is named in the TRUNCATE list, wiping the seeded defaults after the
+        # first test. Deleting rows instead of truncating tables relies on the
+        # FK ondelete behavior already declared on the models (CASCADE for
+        # sessions/accounts/user_settings/owned categories, SET NULL for
+        # audit_logs), so only user-owned data is ever removed; categories
+        # with user_id IS NULL are never touched because NULL never matches
+        # a cascade-delete condition.
+        await conn.execute(text("DELETE FROM audit_logs"))
+        await conn.execute(text("DELETE FROM users"))
 
 
 @pytest_asyncio.fixture
@@ -62,3 +73,26 @@ def register_payload() -> dict:
         "password": "correcthorse123",
         "full_name": "Jane Doe",
     }
+
+
+async def _register(client: AsyncClient, *, email: str, full_name: str) -> dict:
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": "correcthorse123", "full_name": full_name},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+@pytest_asyncio.fixture
+async def auth_headers(client: AsyncClient) -> dict[str, str]:
+    """Registers a fresh user and returns an Authorization header for them."""
+    data = await _register(client, email="owner@example.com", full_name="Owner")
+    return {"Authorization": f"Bearer {data['access_token']}"}
+
+
+@pytest_asyncio.fixture
+async def other_auth_headers(client: AsyncClient) -> dict[str, str]:
+    """A second, independent user - for cross-user authorization tests."""
+    data = await _register(client, email="intruder@example.com", full_name="Intruder")
+    return {"Authorization": f"Bearer {data['access_token']}"}
