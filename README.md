@@ -1,7 +1,10 @@
-# Finance App
+# personal-finance-os
 
-A personal financial operating system. See `PRODUCT_SPEC.md` for the full product spec and
-`CLAUDE.md` for the engineering rules this project follows.
+A production-ready personal finance operating system for tracking expenses, budgets, savings
+goals, subscriptions, accounts, analytics, and AI-powered financial insights.
+
+See `PRODUCT_SPEC.md` for the full product spec and `CLAUDE.md` for the engineering rules this
+project follows.
 
 ## Prerequisites
 
