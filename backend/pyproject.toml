@@ -1,0 +1,55 @@
+[project]
+name = "finance-app-backend"
+version = "0.1.0"
+description = "Personal Financial Operating System - backend"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.5",
+  "sqlalchemy>=2.0.35",
+  "alembic>=1.13",
+  "asyncpg>=0.30",
+  "passlib[argon2]>=1.7",
+  "pyjwt>=2.9",
+  "slowapi>=0.1.9",
+  "email-validator>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "httpx>=0.27",
+  "mypy>=1.13",
+  "ruff>=0.7",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+disallow_untyped_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# B008: FastAPI's Depends()-as-default-argument is the framework's documented
+# pattern, not the mutable-default-argument bug this rule targets.
+ignore = ["B008"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
