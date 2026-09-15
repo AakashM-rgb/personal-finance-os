@@ -12,12 +12,19 @@ from app.repositories.account_repository import AccountRepository
 from app.schemas.account import AccountCreate, AccountRead, AccountUpdate, CreditCardDetailsRead
 
 
+def calculate_credit_utilization_percent(balance_minor: int, credit_limit_minor: int) -> float:
+    """The one canonical utilization formula - reused by the account API
+    response and by the dashboard's health score, so the two can never
+    silently diverge."""
+    if credit_limit_minor <= 0:
+        return 0.0
+    return round((balance_minor / credit_limit_minor) * 100, 2)
+
+
 def _credit_card_read(details: CreditCardDetails, balance_minor: int) -> CreditCardDetailsRead:
     available_credit_minor = details.credit_limit_minor - balance_minor
-    utilization_percent = (
-        round((balance_minor / details.credit_limit_minor) * 100, 2)
-        if details.credit_limit_minor > 0
-        else 0.0
+    utilization_percent = calculate_credit_utilization_percent(
+        balance_minor, details.credit_limit_minor
     )
     return CreditCardDetailsRead(
         credit_limit_minor=details.credit_limit_minor,

@@ -108,6 +108,62 @@ class TransactionRepository:
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_in_range(
+        self,
+        user_id: uuid.UUID,
+        *,
+        date_from: datetime,
+        date_to: datetime,
+        currency: str,
+        exclude_transfer: bool = True,
+    ) -> list[Transaction]:
+        """Fetches every matching row so the caller can derive several
+        aggregates (totals, category breakdown, daily series, ...) from one
+        query instead of issuing a separate SQL aggregate for each - cheap
+        at personal-finance transaction volumes and backed by the existing
+        (user_id, occurred_at) index."""
+        conditions: list[ColumnExpressionArgument[bool]] = [
+            Transaction.user_id == user_id,
+            Transaction.occurred_at >= date_from,
+            Transaction.occurred_at < date_to,
+            Transaction.currency == currency,
+        ]
+        if exclude_transfer:
+            conditions.append(Transaction.type != TransactionType.TRANSFER)
+        stmt = select(Transaction).where(*conditions)
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def sum_expense_in_range(
+        self, user_id: uuid.UUID, *, date_from: datetime, date_to: datetime, currency: str
+    ) -> int:
+        """A single SQL SUM - used for the previous month's total, where we
+        only need one number and don't need the individual rows."""
+        stmt = select(func.coalesce(func.sum(Transaction.amount_minor), 0)).where(
+            Transaction.user_id == user_id,
+            Transaction.type == TransactionType.EXPENSE,
+            Transaction.occurred_at >= date_from,
+            Transaction.occurred_at < date_to,
+            Transaction.currency == currency,
+        )
+        result = await self._db.execute(stmt)
+        return int(result.scalar_one())
+
+    async def list_recent(
+        self, user_id: uuid.UUID, *, limit: int, currency: str | None = None
+    ) -> list[Transaction]:
+        conditions: list[ColumnExpressionArgument[bool]] = [Transaction.user_id == user_id]
+        if currency is not None:
+            conditions.append(Transaction.currency == currency)
+        stmt = (
+            select(Transaction)
+            .where(*conditions)
+            .order_by(Transaction.occurred_at.desc(), Transaction.id.desc())
+            .limit(limit)
+        )
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_by_idempotency_key(
         self, user_id: uuid.UUID, idempotency_key: str
     ) -> Transaction | None:
