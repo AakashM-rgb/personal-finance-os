@@ -37,6 +37,7 @@ from app.schemas.dashboard import (
     UpcomingPayment,
 )
 from app.schemas.transaction import TransactionRead
+from app.services import category_service
 from app.services.account_service import calculate_credit_utilization_percent
 from app.services.health_score import calculate_health_score
 from app.services.month_bounds import current_month_bounds
@@ -234,9 +235,9 @@ def _build_category_breakdown(
         items.append(
             CategoryBreakdownItem(
                 category_id=category_id,
-                name=category.name if category is not None else "Uncategorized",
-                icon=category.icon if category is not None else "🏷️",
-                color=category.color if category is not None else "#9CA3AF",
+                name=category_service.display_name(category),
+                icon=category_service.display_icon(category),
+                color=category_service.display_color(category),
                 amount_minor=amount_minor,
                 percent=round(amount_minor / total_expense_minor * 100, 1)
                 if total_expense_minor > 0

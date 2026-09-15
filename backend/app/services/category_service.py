@@ -1,5 +1,11 @@
 """Category business logic: visibility (system vs. owned), ownership
-enforcement for mutation, and parent-category cycle prevention."""
+enforcement for mutation, and parent-category cycle prevention.
+
+The UNCATEGORIZED_* constants and display_* helpers are the one shared
+"how do we show a transaction with no category" convention - reused by
+budget_service, dashboard_service, and analytics_service so a transaction
+with category_id=None is never dropped or labeled differently depending
+on which module happens to be rendering it."""
 
 import uuid
 
@@ -9,6 +15,22 @@ from app.core.errors import AuthorizationError, NotFoundError, ValidationAppErro
 from app.models.category import Category
 from app.repositories.category_repository import CategoryRepository
 from app.schemas.category import CategoryCreate, CategoryRead, CategoryUpdate
+
+UNCATEGORIZED_NAME = "Uncategorized"
+UNCATEGORIZED_ICON = "🏷️"
+UNCATEGORIZED_COLOR = "#9CA3AF"
+
+
+def display_name(category: Category | None) -> str:
+    return category.name if category is not None else UNCATEGORIZED_NAME
+
+
+def display_icon(category: Category | None) -> str:
+    return category.icon if category is not None else UNCATEGORIZED_ICON
+
+
+def display_color(category: Category | None) -> str:
+    return category.color if category is not None else UNCATEGORIZED_COLOR
 
 
 def _to_read(category: Category) -> CategoryRead:

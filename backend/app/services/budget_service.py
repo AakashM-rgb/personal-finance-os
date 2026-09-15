@@ -20,6 +20,7 @@ from app.repositories.category_repository import CategoryRepository
 from app.repositories.transaction_repository import TransactionRepository
 from app.repositories.user_settings_repository import UserSettingsRepository
 from app.schemas.budget import BudgetItemCreate, BudgetItemRead, BudgetItemUpdate, BudgetSuggestion
+from app.services import category_service
 from app.services.budget_calculations import (
     build_warning_message,
     determine_budget_status,
@@ -55,14 +56,14 @@ def _to_read(
 ) -> BudgetItemRead:
     percent_used = round(spent_minor / item.amount_minor * 100, 1) if item.amount_minor > 0 else 0.0
     status = determine_budget_status(percent_used)
-    category_name = category.name if category is not None else "Uncategorized"
+    category_name = category_service.display_name(category)
 
     return BudgetItemRead(
         id=item.id,
         category_id=item.category_id,
         category_name=category_name,
-        category_icon=category.icon if category is not None else "🏷️",
-        category_color=category.color if category is not None else "#9CA3AF",
+        category_icon=category_service.display_icon(category),
+        category_color=category_service.display_color(category),
         currency=currency,
         amount_minor=item.amount_minor,
         spent_minor=spent_minor,
