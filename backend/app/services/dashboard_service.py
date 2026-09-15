@@ -39,25 +39,9 @@ from app.schemas.dashboard import (
 from app.schemas.transaction import TransactionRead
 from app.services.account_service import calculate_credit_utilization_percent
 from app.services.health_score import calculate_health_score
+from app.services.month_bounds import current_month_bounds
 
 _RECENT_TRANSACTIONS_LIMIT = 8
-
-
-def _month_bounds(now: datetime) -> tuple[datetime, datetime, datetime]:
-    """Returns (previous_month_start, this_month_start, next_month_start), all UTC."""
-    this_month_start = datetime(now.year, now.month, 1, tzinfo=UTC)
-
-    if now.month == 12:
-        next_month_start = datetime(now.year + 1, 1, 1, tzinfo=UTC)
-    else:
-        next_month_start = datetime(now.year, now.month + 1, 1, tzinfo=UTC)
-
-    if now.month == 1:
-        previous_month_start = datetime(now.year - 1, 12, 1, tzinfo=UTC)
-    else:
-        previous_month_start = datetime(now.year, now.month - 1, 1, tzinfo=UTC)
-
-    return previous_month_start, this_month_start, next_month_start
 
 
 def _next_occurrence_of_day(today: date, day_of_month: int) -> date:
@@ -97,7 +81,7 @@ async def get_dashboard(db: AsyncSession, *, user_id: uuid.UUID) -> DashboardRea
     )
     net_worth_minor = total_balance_minor - total_credit_debt_minor
 
-    previous_month_start, this_month_start, next_month_start = _month_bounds(now)
+    previous_month_start, this_month_start, next_month_start = current_month_bounds(now)
 
     txn_repo = TransactionRepository(db)
     this_month_transactions = await txn_repo.list_in_range(

@@ -3,6 +3,7 @@ before Alembic autogenerate or SQLAlchemy mapper configuration runs."""
 
 from app.models.account import Account, AccountType
 from app.models.audit_log import AuditLog
+from app.models.budget import Budget, BudgetItem
 from app.models.category import Category
 from app.models.credit_card_details import CreditCardDetails
 from app.models.session import Session
@@ -14,6 +15,8 @@ __all__ = [
     "Account",
     "AccountType",
     "AuditLog",
+    "Budget",
+    "BudgetItem",
     "Category",
     "CreditCardDetails",
     "Session",

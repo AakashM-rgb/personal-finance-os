@@ -135,17 +135,27 @@ class TransactionRepository:
         return list(result.scalars().all())
 
     async def sum_expense_in_range(
-        self, user_id: uuid.UUID, *, date_from: datetime, date_to: datetime, currency: str
+        self,
+        user_id: uuid.UUID,
+        *,
+        date_from: datetime,
+        date_to: datetime,
+        currency: str,
+        category_id: uuid.UUID | None = None,
     ) -> int:
-        """A single SQL SUM - used for the previous month's total, where we
-        only need one number and don't need the individual rows."""
-        stmt = select(func.coalesce(func.sum(Transaction.amount_minor), 0)).where(
+        """A single SQL SUM - used where we only need one number and don't
+        need the individual rows (the dashboard's previous-month total, and
+        a single budget item's current-month spend)."""
+        conditions: list[ColumnExpressionArgument[bool]] = [
             Transaction.user_id == user_id,
             Transaction.type == TransactionType.EXPENSE,
             Transaction.occurred_at >= date_from,
             Transaction.occurred_at < date_to,
             Transaction.currency == currency,
-        )
+        ]
+        if category_id is not None:
+            conditions.append(Transaction.category_id == category_id)
+        stmt = select(func.coalesce(func.sum(Transaction.amount_minor), 0)).where(*conditions)
         result = await self._db.execute(stmt)
         return int(result.scalar_one())
 
