@@ -1,7 +1,8 @@
 """Account business logic: validation, ownership enforcement, and the
-credit-utilization calculations shown to the user."""
+credit-utilization and net-worth calculations shown to the user."""
 
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +30,31 @@ async def resolve_active_account(
             field_errors={field: "archived"},
         )
     return account
+
+
+@dataclass(frozen=True)
+class NetWorthBreakdown:
+    total_assets_minor: int
+    total_liabilities_minor: int
+    net_worth_minor: int
+
+
+def calculate_net_worth(accounts: list[Account]) -> NetWorthBreakdown:
+    """The one canonical net-worth formula - reused by the dashboard and
+    the net-worth report, so the two can never silently diverge. A credit
+    card's balance_minor represents money owed (a liability); every other
+    account type's balance_minor is an asset. `accounts` should already be
+    filtered to active, base-currency accounts by the caller (v1 never
+    sums across currencies)."""
+    total_assets_minor = sum(a.balance_minor for a in accounts if a.type != AccountType.CREDIT_CARD)
+    total_liabilities_minor = sum(
+        a.balance_minor for a in accounts if a.type == AccountType.CREDIT_CARD
+    )
+    return NetWorthBreakdown(
+        total_assets_minor=total_assets_minor,
+        total_liabilities_minor=total_liabilities_minor,
+        net_worth_minor=total_assets_minor - total_liabilities_minor,
+    )
 
 
 def calculate_credit_utilization_percent(balance_minor: int, credit_limit_minor: int) -> float:

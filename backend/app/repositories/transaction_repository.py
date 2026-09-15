@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
-from sqlalchemy import ColumnExpressionArgument, func, or_, select
+from sqlalchemy import ColumnExpressionArgument, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.transaction import Transaction, TransactionType
@@ -229,21 +229,24 @@ class TransactionRepository:
         result = await self._db.execute(stmt)
         return [occurred_at.date() for occurred_at in result.scalars().all()]
 
-    async def sum_expense_by_period(
+    async def sum_by_type_and_period(
         self,
         user_id: uuid.UUID,
         *,
+        transaction_type: TransactionType,
         date_from: datetime,
         date_to: datetime,
         currency: str,
         granularity: Literal["day", "month"],
     ) -> list[tuple[date, int]]:
-        """Real expense totals grouped by calendar day or month, computed
-        entirely in the database (date_trunc + SUM + GROUP BY) rather than
-        fetching every row into Python - the basis for the analytics
-        spending-over-time and daily-spending charts. Periods with zero
-        expense are simply absent from the result; callers zero-fill them
-        against app.services.analytics_calculations.generate_day_periods /
+        """Real totals of one transaction type grouped by calendar day or
+        month, computed entirely in the database (date_trunc + SUM +
+        GROUP BY) rather than fetching every row into Python - the basis
+        for the analytics spending-over-time/daily-spending charts and
+        the reports module's income/expense-over-time series. Periods
+        with zero activity are simply absent from the result; callers
+        zero-fill them against
+        app.services.analytics_calculations.generate_day_periods /
         generate_month_periods."""
         # The 3-arg form pins the truncation to UTC explicitly - Postgres's
         # 2-arg date_trunc truncates in the *session's* TimeZone setting
@@ -256,7 +259,7 @@ class TransactionRepository:
             select(period, func.sum(Transaction.amount_minor))
             .where(
                 Transaction.user_id == user_id,
-                Transaction.type == TransactionType.EXPENSE,
+                Transaction.type == transaction_type,
                 Transaction.occurred_at >= date_from,
                 Transaction.occurred_at < date_to,
                 Transaction.currency == currency,
@@ -266,6 +269,27 @@ class TransactionRepository:
         )
         result = await self._db.execute(stmt)
         return [(period_start.date(), int(total)) for period_start, total in result.all()]
+
+    async def sum_expense_by_period(
+        self,
+        user_id: uuid.UUID,
+        *,
+        date_from: datetime,
+        date_to: datetime,
+        currency: str,
+        granularity: Literal["day", "month"],
+    ) -> list[tuple[date, int]]:
+        """Thin wrapper over sum_by_type_and_period for EXPENSE - kept as
+        its own method so existing callers (analytics_service) never had
+        to change signatures when this was generalized."""
+        return await self.sum_by_type_and_period(
+            user_id,
+            transaction_type=TransactionType.EXPENSE,
+            date_from=date_from,
+            date_to=date_to,
+            currency=currency,
+            granularity=granularity,
+        )
 
     async def sum_income_and_expense_by_month(
         self, user_id: uuid.UUID, *, date_from: datetime, date_to: datetime, currency: str
@@ -293,6 +317,187 @@ class TransactionRepository:
         return [
             (period_start.date(), txn_type, int(total))
             for period_start, txn_type, total in result.all()
+        ]
+
+    async def sum_and_count_by_category(
+        self,
+        user_id: uuid.UUID,
+        *,
+        transaction_type: TransactionType,
+        date_from: datetime,
+        date_to: datetime,
+        currency: str,
+    ) -> list[tuple[uuid.UUID | None, int, int]]:
+        """Real totals AND transaction counts of one transaction type,
+        grouped by category (NULL included, for uncategorized activity) -
+        the basis for the reports module's category/income breakdowns.
+        One query returns both figures rather than a separate COUNT query
+        repeating the same GROUP BY."""
+        stmt = (
+            select(
+                Transaction.category_id,
+                func.sum(Transaction.amount_minor),
+                func.count(),
+            )
+            .where(
+                Transaction.user_id == user_id,
+                Transaction.type == transaction_type,
+                Transaction.occurred_at >= date_from,
+                Transaction.occurred_at < date_to,
+                Transaction.currency == currency,
+            )
+            .group_by(Transaction.category_id)
+        )
+        result = await self._db.execute(stmt)
+        return [(category_id, int(total), int(count)) for category_id, total, count in result.all()]
+
+    async def sum_by_recurring_flag(
+        self, user_id: uuid.UUID, *, date_from: datetime, date_to: datetime, currency: str
+    ) -> dict[bool, int]:
+        """Real expense totals split by whether each transaction is
+        recurring-linked or not (Transaction.is_recurring) - the basis for
+        the expense report's recurring-vs-non-recurring breakdown. Keys
+        missing from the result mean zero for that side, same convention
+        as every other sum_* method here."""
+        stmt = (
+            select(Transaction.is_recurring, func.sum(Transaction.amount_minor))
+            .where(
+                Transaction.user_id == user_id,
+                Transaction.type == TransactionType.EXPENSE,
+                Transaction.occurred_at >= date_from,
+                Transaction.occurred_at < date_to,
+                Transaction.currency == currency,
+            )
+            .group_by(Transaction.is_recurring)
+        )
+        result = await self._db.execute(stmt)
+        return {is_recurring: int(total) for is_recurring, total in result.all()}
+
+    async def list_top_by_amount(
+        self,
+        user_id: uuid.UUID,
+        *,
+        transaction_type: TransactionType,
+        date_from: datetime,
+        date_to: datetime,
+        currency: str,
+        limit: int,
+    ) -> list[Transaction]:
+        """The `limit` largest transactions of one type in a range,
+        ordered by amount descending - a single indexed range scan plus
+        an ORDER BY/LIMIT the database itself applies, never a full fetch
+        sorted in Python. The basis for the income/expense reports'
+        "largest transactions" figures."""
+        stmt = (
+            select(Transaction)
+            .where(
+                Transaction.user_id == user_id,
+                Transaction.type == transaction_type,
+                Transaction.occurred_at >= date_from,
+                Transaction.occurred_at < date_to,
+                Transaction.currency == currency,
+            )
+            .order_by(Transaction.amount_minor.desc())
+            .limit(limit)
+        )
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_latest_occurrence_dates_for_recurring_ids(
+        self, recurring_transaction_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, date]:
+        """The most recently generated occurrence date for every id in
+        `recurring_transaction_ids`, in one query - the bulk counterpart
+        of get_latest_occurrence_date_for_recurring, used by the
+        financial calendar to project each active recurring transaction's
+        next due date without querying once per schedule (N+1)."""
+        if not recurring_transaction_ids:
+            return {}
+        stmt = (
+            select(Transaction.recurring_transaction_id, func.max(Transaction.occurred_at))
+            .where(Transaction.recurring_transaction_id.in_(recurring_transaction_ids))
+            .group_by(Transaction.recurring_transaction_id)
+        )
+        result = await self._db.execute(stmt)
+        return {
+            recurring_id: latest.date() for recurring_id, latest in result.all() if recurring_id
+        }
+
+    async def sum_balance_delta_by_month_for_accounts(
+        self,
+        user_id: uuid.UUID,
+        *,
+        account_ids: list[uuid.UUID],
+        date_from: datetime,
+        date_to: datetime,
+        currency: str,
+    ) -> list[tuple[date, uuid.UUID, int]]:
+        """For every account in `account_ids`, the signed delta real
+        transactions applied to that account's balance_minor, grouped by
+        calendar month - mirrors app.services.transaction_service.
+        _apply_balance_effect exactly (income +amount on its account,
+        expense -amount on its account, transfer -amount on `account_id`
+        and +amount on `transfer_account_id`), so a caller reconstructing a
+        historical balance can never silently diverge from how balances are
+        actually mutated. Unlike sum_income_and_expense_by_month, a transfer
+        is NOT excluded here - restricted instead to `account_ids` on
+        purpose, since a transfer crossing into/out of one of those accounts
+        genuinely changes ITS balance and must be counted; a transfer
+        between two accounts outside `account_ids` correctly contributes
+        nothing. One query total (a UNION ALL of the transaction's two
+        possible legs, grouped once), never one query per account."""
+        if not account_ids:
+            return []
+
+        period = func.date_trunc("month", Transaction.occurred_at, "UTC").label("period")
+        base_conditions: list[ColumnExpressionArgument[bool]] = [
+            Transaction.user_id == user_id,
+            Transaction.occurred_at >= date_from,
+            Transaction.occurred_at < date_to,
+            Transaction.currency == currency,
+        ]
+
+        # Leg 1: the effect on `account_id` - the account every transaction
+        # type has (source account for a transfer, the only account for
+        # income/expense).
+        primary = select(
+            period,
+            Transaction.account_id.label("account_id"),
+            func.sum(
+                case(
+                    (Transaction.type == TransactionType.INCOME, Transaction.amount_minor),
+                    (
+                        Transaction.type.in_([TransactionType.EXPENSE, TransactionType.TRANSFER]),
+                        -Transaction.amount_minor,
+                    ),
+                    else_=0,
+                )
+            ).label("delta"),
+        ).where(*base_conditions, Transaction.account_id.in_(account_ids))
+        primary = primary.group_by(period, Transaction.account_id)
+
+        # Leg 2: a transfer's destination account, which gains what the
+        # source lost.
+        secondary = select(
+            period,
+            Transaction.transfer_account_id.label("account_id"),
+            func.sum(Transaction.amount_minor).label("delta"),
+        ).where(
+            *base_conditions,
+            Transaction.type == TransactionType.TRANSFER,
+            Transaction.transfer_account_id.in_(account_ids),
+        )
+        secondary = secondary.group_by(period, Transaction.transfer_account_id)
+
+        combined = primary.union_all(secondary).subquery()
+        stmt = select(
+            combined.c.period, combined.c.account_id, func.sum(combined.c.delta)
+        ).group_by(combined.c.period, combined.c.account_id)
+
+        result = await self._db.execute(stmt)
+        return [
+            (period_start.date(), account_id, int(total))
+            for period_start, account_id, total in result.all()
         ]
 
     async def sum_expense_by_category(

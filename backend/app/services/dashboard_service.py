@@ -38,7 +38,7 @@ from app.schemas.dashboard import (
 )
 from app.schemas.transaction import TransactionRead
 from app.services import category_service
-from app.services.account_service import calculate_credit_utilization_percent
+from app.services.account_service import calculate_credit_utilization_percent, calculate_net_worth
 from app.services.health_score import calculate_health_score
 from app.services.month_bounds import current_month_bounds
 
@@ -74,13 +74,9 @@ async def get_dashboard(db: AsyncSession, *, user_id: uuid.UUID) -> DashboardRea
     accounts = [a for a in all_accounts if a.currency == base_currency]
     excluded_other_currency_accounts = len(all_accounts) - len(accounts)
 
-    total_balance_minor = sum(
-        a.balance_minor for a in accounts if a.type != AccountType.CREDIT_CARD
-    )
-    total_credit_debt_minor = sum(
-        a.balance_minor for a in accounts if a.type == AccountType.CREDIT_CARD
-    )
-    net_worth_minor = total_balance_minor - total_credit_debt_minor
+    net_worth = calculate_net_worth(accounts)
+    total_balance_minor = net_worth.total_assets_minor
+    net_worth_minor = net_worth.net_worth_minor
 
     previous_month_start, this_month_start, next_month_start = current_month_bounds(now)
 

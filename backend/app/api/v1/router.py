@@ -5,11 +5,13 @@ from app.api.v1 import (
     analytics,
     auth,
     budgets,
+    calendar,
     categories,
     dashboard,
     goals,
     health,
     recurring_transactions,
+    reports,
     subscriptions,
     transactions,
 )
@@ -26,3 +28,5 @@ api_router.include_router(goals.router)
 api_router.include_router(recurring_transactions.router)
 api_router.include_router(subscriptions.router)
 api_router.include_router(analytics.router)
+api_router.include_router(calendar.router)
+api_router.include_router(reports.router)
