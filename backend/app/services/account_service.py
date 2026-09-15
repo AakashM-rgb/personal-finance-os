@@ -12,6 +12,25 @@ from app.repositories.account_repository import AccountRepository
 from app.schemas.account import AccountCreate, AccountRead, AccountUpdate, CreditCardDetailsRead
 
 
+async def resolve_active_account(
+    db: AsyncSession, *, user_id: uuid.UUID, account_id: uuid.UUID, field: str = "account_id"
+) -> Account:
+    """The shared "usable account" check: must exist, be owned by the
+    caller, and not be archived. Used by transaction creation/update and by
+    recurring-transaction creation/update, so an archived account can never
+    be silently used for a new financial commitment via either path - one
+    rule, never two divergent copies of it."""
+    account = await AccountRepository(db).get_by_id_for_user(account_id, user_id)
+    if account is None:
+        raise NotFoundError("Account not found.")
+    if not account.is_active:
+        raise ValidationAppError(
+            "This account is archived and can't be used for transactions.",
+            field_errors={field: "archived"},
+        )
+    return account
+
+
 def calculate_credit_utilization_percent(balance_minor: int, credit_limit_minor: int) -> float:
     """The one canonical utilization formula - reused by the account API
     response and by the dashboard's health score, so the two can never

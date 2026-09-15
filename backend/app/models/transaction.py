@@ -17,6 +17,13 @@ own currency. It is still stored on the row (not derived live from the
 account on every read) because the account's currency can be edited later;
 a transaction must keep recording what currency it actually happened in,
 not whatever the account's currency happens to be today.
+
+`recurring_transaction_id` links a generated occurrence back to its
+schedule template (see app.models.recurring_transaction). The unique
+constraint on (recurring_transaction_id, occurred_at) is the database-level
+half of the recurring-generation idempotency guarantee described in
+CLAUDE.md §4 - Postgres treats multiple NULLs as distinct, so ordinary
+(non-generated) transactions never collide with each other on it.
 """
 
 import enum
@@ -63,6 +70,13 @@ class Transaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         # Postgres treats multiple NULLs as distinct, so requests with no
         # idempotency key never collide with each other.
         UniqueConstraint("user_id", "idempotency_key", name="uq_transactions_user_idempotency_key"),
+        # The database-level backstop for idempotent recurring generation -
+        # see the module docstring.
+        UniqueConstraint(
+            "recurring_transaction_id",
+            "occurred_at",
+            name="uq_transactions_recurring_occurrence",
+        ),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -77,6 +91,15 @@ class Transaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("categories.id", ondelete="SET NULL"), nullable=True
+    )
+    # SET NULL (not CASCADE): deleting the recurring template must never
+    # delete the real transactions it already generated - it only detaches
+    # them into ordinary standalone transactions.
+    recurring_transaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("recurring_transactions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
 
     type: Mapped[TransactionType] = mapped_column(

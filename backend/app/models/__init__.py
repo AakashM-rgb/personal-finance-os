@@ -6,6 +6,7 @@ from app.models.audit_log import AuditLog
 from app.models.budget import Budget, BudgetItem
 from app.models.category import Category
 from app.models.credit_card_details import CreditCardDetails
+from app.models.recurring_transaction import RecurrenceFrequency, RecurringTransaction
 from app.models.savings_goal import SavingsGoal
 from app.models.session import Session
 from app.models.transaction import Transaction, TransactionType
@@ -20,6 +21,8 @@ __all__ = [
     "BudgetItem",
     "Category",
     "CreditCardDetails",
+    "RecurrenceFrequency",
+    "RecurringTransaction",
     "SavingsGoal",
     "Session",
     "Transaction",

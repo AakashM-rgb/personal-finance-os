@@ -101,6 +101,7 @@ class TransactionRead(BaseModel):
 
     occurred_at: datetime
     is_recurring: bool
+    recurring_transaction_id: UUID | None
 
     created_at: datetime
     updated_at: datetime

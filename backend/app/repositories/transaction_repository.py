@@ -3,7 +3,7 @@ caller can never read or mutate another user's transaction by guessing an id."""
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from sqlalchemy import ColumnExpressionArgument, func, or_, select
@@ -173,6 +173,22 @@ class TransactionRepository:
         )
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_latest_occurrence_date_for_recurring(
+        self, recurring_transaction_id: uuid.UUID
+    ) -> date | None:
+        """The date of the most recently generated occurrence for this
+        recurring transaction, or None if it has never generated one yet -
+        the basis for computing the next occurrence date idempotently (see
+        app.services.recurring_transaction_service). Not scoped by user_id:
+        callers already own the recurring_transaction_id after an ownership
+        check upstream, and this id uniquely identifies one user's schedule."""
+        stmt = select(func.max(Transaction.occurred_at)).where(
+            Transaction.recurring_transaction_id == recurring_transaction_id
+        )
+        result = await self._db.execute(stmt)
+        latest = result.scalar_one_or_none()
+        return latest.date() if latest is not None else None
 
     async def get_by_idempotency_key(
         self, user_id: uuid.UUID, idempotency_key: str

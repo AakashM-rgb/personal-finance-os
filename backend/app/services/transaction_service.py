@@ -22,25 +22,12 @@ from app.schemas.transaction import (
     TransactionRead,
     TransactionUpdate,
 )
+from app.services import account_service
 from app.services.quick_add_parser import parse_quick_add_text
 
 
 def _to_read(transaction: Transaction) -> TransactionRead:
     return TransactionRead.model_validate(transaction)
-
-
-async def _resolve_account(
-    account_repo: AccountRepository, *, user_id: uuid.UUID, account_id: uuid.UUID, field: str
-) -> Account:
-    account = await account_repo.get_by_id_for_user(account_id, user_id)
-    if account is None:
-        raise NotFoundError("Account not found.")
-    if not account.is_active:
-        raise ValidationAppError(
-            "This account is archived and can't be used for transactions.",
-            field_errors={field: "archived"},
-        )
-    return account
 
 
 async def _validate_shape(
@@ -52,9 +39,8 @@ async def _validate_shape(
     transaction_type: TransactionType,
     category_id: uuid.UUID | None,
 ) -> tuple[Account, Account | None]:
-    account_repo = AccountRepository(db)
-    account = await _resolve_account(
-        account_repo, user_id=user_id, account_id=account_id, field="account_id"
+    account = await account_service.resolve_active_account(
+        db, user_id=user_id, account_id=account_id, field="account_id"
     )
 
     if transaction_type == TransactionType.TRANSFER:
@@ -68,8 +54,8 @@ async def _validate_shape(
                 "Choose a different destination account.",
                 field_errors={"transfer_account_id": "same as source"},
             )
-        transfer_account = await _resolve_account(
-            account_repo,
+        transfer_account = await account_service.resolve_active_account(
+            db,
             user_id=user_id,
             account_id=transfer_account_id,
             field="transfer_account_id",
@@ -143,7 +129,15 @@ async def create_transaction(
     user_id: uuid.UUID,
     data: TransactionCreate,
     idempotency_key: str | None,
+    recurring_transaction_id: uuid.UUID | None = None,
 ) -> TransactionRead:
+    """`recurring_transaction_id` is never accepted from the request body
+    (TransactionCreate has no such field) - it is only ever passed by
+    app.services.recurring_transaction_service when materializing a due
+    occurrence, so a caller can never forge a link to another user's
+    schedule. Every generated occurrence goes through this exact function,
+    so it gets the same validation and account-balance effect as a
+    manually-created transaction - never a second, divergent code path."""
     txn_repo = TransactionRepository(db)
 
     if idempotency_key:
@@ -174,8 +168,9 @@ async def create_transaction(
         payment_method=data.payment_method,
         tags=data.tags,
         occurred_at=data.occurred_at or datetime.now(UTC),
-        is_recurring=data.is_recurring,
+        is_recurring=data.is_recurring or recurring_transaction_id is not None,
         idempotency_key=idempotency_key,
+        recurring_transaction_id=recurring_transaction_id,
     )
     txn_repo.add(transaction)
     await txn_repo.flush()

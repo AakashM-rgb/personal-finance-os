@@ -18,6 +18,7 @@ export interface Transaction {
   tags: string[];
   occurred_at: string;
   is_recurring: boolean;
+  recurring_transaction_id: string | null;
   created_at: string;
   updated_at: string;
 }

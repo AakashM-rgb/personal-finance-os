@@ -1,6 +1,16 @@
 from fastapi import APIRouter
 
-from app.api.v1 import accounts, auth, budgets, categories, dashboard, goals, health, transactions
+from app.api.v1 import (
+    accounts,
+    auth,
+    budgets,
+    categories,
+    dashboard,
+    goals,
+    health,
+    recurring_transactions,
+    transactions,
+)
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(health.router)
@@ -11,3 +21,4 @@ api_router.include_router(transactions.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(budgets.router)
 api_router.include_router(goals.router)
+api_router.include_router(recurring_transactions.router)

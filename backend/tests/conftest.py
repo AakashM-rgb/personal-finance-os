@@ -66,6 +66,15 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
 
+@pytest_asyncio.fixture
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    """A raw session for tests that need to call a service/job function
+    directly - e.g. the system-wide recurring-generation sweep, which has
+    no user-facing endpoint of its own to exercise it through."""
+    async with TestSessionLocal() as session:
+        yield session
+
+
 @pytest.fixture
 def register_payload() -> dict:
     return {
