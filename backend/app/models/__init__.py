@@ -9,6 +9,7 @@ from app.models.credit_card_details import CreditCardDetails
 from app.models.recurring_transaction import RecurrenceFrequency, RecurringTransaction
 from app.models.savings_goal import SavingsGoal
 from app.models.session import Session
+from app.models.subscription import Subscription
 from app.models.transaction import Transaction, TransactionType
 from app.models.user import User
 from app.models.user_settings import UserSettings
@@ -25,6 +26,7 @@ __all__ = [
     "RecurringTransaction",
     "SavingsGoal",
     "Session",
+    "Subscription",
     "Transaction",
     "TransactionType",
     "User",

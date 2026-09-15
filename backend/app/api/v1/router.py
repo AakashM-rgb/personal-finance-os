@@ -9,6 +9,7 @@ from app.api.v1 import (
     goals,
     health,
     recurring_transactions,
+    subscriptions,
     transactions,
 )
 
@@ -22,3 +23,4 @@ api_router.include_router(dashboard.router)
 api_router.include_router(budgets.router)
 api_router.include_router(goals.router)
 api_router.include_router(recurring_transactions.router)
+api_router.include_router(subscriptions.router)

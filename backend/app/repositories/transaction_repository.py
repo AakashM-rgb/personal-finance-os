@@ -190,6 +190,45 @@ class TransactionRepository:
         latest = result.scalar_one_or_none()
         return latest.date() if latest is not None else None
 
+    async def list_occurrence_dates_for_recurring(
+        self, recurring_transaction_id: uuid.UUID
+    ) -> list[date]:
+        """Every real generated billing date for this recurring transaction
+        - the evidence a subscription's unused-detection rule is judged
+        against (see app.services.subscription_calculations). Not scoped by
+        user_id, for the same reason as get_latest_occurrence_date_for_recurring."""
+        stmt = select(Transaction.occurred_at).where(
+            Transaction.recurring_transaction_id == recurring_transaction_id
+        )
+        result = await self._db.execute(stmt)
+        return [occurred_at.date() for occurred_at in result.scalars().all()]
+
+    async def list_category_activity_dates(
+        self,
+        user_id: uuid.UUID,
+        *,
+        category_id: uuid.UUID,
+        exclude_recurring_transaction_id: uuid.UUID,
+        date_from: datetime,
+    ) -> list[date]:
+        """Every OTHER transaction's date in this category since `date_from`
+        - "other" meaning anything but this specific subscription's own
+        generated charges (a different recurring transaction's charges in
+        the same category, or a manual transaction, both count as real
+        category activity). The evidence side of the unused-subscription
+        check that isn't the subscription's own billing history."""
+        stmt = select(Transaction.occurred_at).where(
+            Transaction.user_id == user_id,
+            Transaction.category_id == category_id,
+            Transaction.occurred_at >= date_from,
+            or_(
+                Transaction.recurring_transaction_id.is_(None),
+                Transaction.recurring_transaction_id != exclude_recurring_transaction_id,
+            ),
+        )
+        result = await self._db.execute(stmt)
+        return [occurred_at.date() for occurred_at in result.scalars().all()]
+
     async def get_by_idempotency_key(
         self, user_id: uuid.UUID, idempotency_key: str
     ) -> Transaction | None:

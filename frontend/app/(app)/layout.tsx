@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/transactions", label: "Transactions" },
   { href: "/recurring-transactions", label: "Recurring" },
+  { href: "/subscriptions", label: "Subscriptions" },
   { href: "/budgets", label: "Budgets" },
   { href: "/goals", label: "Goals" },
   { href: "/accounts", label: "Accounts" },
