@@ -97,7 +97,7 @@ async def get_receipt_file(
     content, content_type, filename = await receipt_service.get_receipt_file(
         db, user_id=current_user.id, receipt_id=receipt_id
     )
-    headers = {"Content-Disposition": f'inline; filename="{filename}"'} if filename else {}
+    headers = {"Content-Disposition": receipt_service.content_disposition_value(filename)}
     return Response(content=content, media_type=content_type, headers=headers)
 
 

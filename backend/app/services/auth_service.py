@@ -129,6 +129,12 @@ async def login(
             ip_address=ip_address,
             user_agent=user_agent,
         )
+        # This function raises before the router's own db.commit() runs, and
+        # get_db never auto-commits on an error path - without committing
+        # here, this audit entry would only ever be flushed to the open
+        # transaction and then silently rolled back when the session closes
+        # uncommitted, never actually persisted.
+        await db.commit()
         raise AuthenticationError(_GENERIC_LOGIN_ERROR)
 
     if not user.is_active:
@@ -158,15 +164,47 @@ async def refresh_session(
     session_repo = SessionRepository(db)
     session: Session | None = await session_repo.get_by_id(session_id)
 
-    invalid = (
-        session is None
-        or not session.is_active
-        or not verify_refresh_token(secret, session.refresh_token_hash)
+    # The secret must be checked BEFORE looking at revoked/expired state:
+    # only a matching secret proves this is a genuine, previously-issued
+    # credential being replayed, rather than an attacker guessing a
+    # session id they saw somewhere (e.g. in a log) with a random secret -
+    # the latter is not evidence of anything and must not trigger the
+    # compromise response below.
+    secret_matches = session is not None and verify_refresh_token(
+        secret, session.refresh_token_hash
     )
-    if invalid:
+    if not secret_matches:
         raise AuthenticationError("Invalid or expired session. Please log in again.")
 
-    assert session is not None  # narrowed by `invalid` check above
+    assert session is not None  # narrowed by `secret_matches` above
+    if session.revoked_at is not None:
+        # A real, previously-valid refresh token is being presented again
+        # after it was already revoked (by rotation or logout) - CLAUDE.md:
+        # "reuse of a rotated-out token is treated as a possible
+        # compromise." Whoever revoked it (the legitimate client) already
+        # has a newer token; anyone still presenting this one is not that
+        # same party. Burn every session for this user so both a stolen
+        # copy and the legitimate client must re-authenticate.
+        await session_repo.revoke_all_for_user(session.user_id)
+        await log_action(
+            db,
+            user_id=session.user_id,
+            action="session.reuse_detected",
+            entity_type="session",
+            entity_id=str(session.id),
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        # Same reasoning as the login-failure path above: this function
+        # raises before the router's own commit runs, so the mass
+        # revocation and audit entry must be committed here or the
+        # compromise response never actually reaches the database.
+        await db.commit()
+        raise AuthenticationError("Invalid or expired session. Please log in again.")
+
+    if session.expires_at <= datetime.now(UTC):
+        raise AuthenticationError("Invalid or expired session. Please log in again.")
+
     user_repo = UserRepository(db)
     user = await user_repo.get_by_id(session.user_id)
     if user is None or not user.is_active:

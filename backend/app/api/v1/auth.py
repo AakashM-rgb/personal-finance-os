@@ -76,6 +76,7 @@ async def login(
 
 
 @router.post("/refresh", response_model=None, dependencies=[Depends(verify_csrf)])
+@limiter.limit(settings.refresh_rate_limit)
 async def refresh(
     request: Request,
     response: Response,
@@ -98,6 +99,7 @@ async def refresh(
 
 
 @router.post("/logout", response_model=None, dependencies=[Depends(verify_csrf)])
+@limiter.limit(settings.refresh_rate_limit)
 async def logout(
     request: Request,
     response: Response,

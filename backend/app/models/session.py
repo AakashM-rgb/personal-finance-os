@@ -2,8 +2,10 @@
 
 The raw refresh token is never persisted, only its hash (see app.core.security),
 so a database read alone can never yield a usable session token. Revoking a row
-here (or its family via replaced_by chaining) is what makes "logout from all
-devices" and rotation-reuse detection actually work server-side.
+here is what makes "logout from all devices" work server-side; rotation-reuse
+detection (app.services.auth_service.refresh_session) revokes every row for a
+user the moment an already-revoked token is presented again with a matching
+secret - see that function's docstring for why.
 """
 
 import uuid

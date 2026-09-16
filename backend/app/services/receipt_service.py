@@ -13,6 +13,7 @@ import re
 import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime, time
+from urllib.parse import quote
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -78,6 +79,24 @@ def sanitize_filename(filename: str | None) -> str | None:
     if not name or name in {".", ".."}:
         return None
     return name[:_MAX_FILENAME_LENGTH]
+
+
+def content_disposition_value(filename: str | None, *, disposition: str = "inline") -> str:
+    """Builds a safe `Content-Disposition` header value for a stored
+    filename that, while control-character-free (see sanitize_filename),
+    is still otherwise arbitrary user input - it can contain `"` or `\\`,
+    which would otherwise break out of the quoted `filename="..."`
+    parameter. Both the quoted-string fallback (quotes/backslashes
+    escaped, non-ASCII stripped, per RFC 6266 the ASCII fallback) and an
+    RFC 5987 percent-encoded `filename*` parameter (full Unicode fidelity)
+    are included, exactly as recommended by RFC 6266 §5."""
+    if not filename:
+        return disposition
+
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii") or "receipt"
+    escaped = ascii_fallback.replace("\\", "\\\\").replace('"', '\\"')
+    encoded = quote(filename, safe="")
+    return f'{disposition}; filename="{escaped}"; filename*=UTF-8\'\'{encoded}'
 
 
 def _validate_pdf_readable(content: bytes) -> None:

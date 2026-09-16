@@ -27,6 +27,13 @@ class Settings(BaseSettings):
 
     login_rate_limit: str = Field(alias="LOGIN_RATE_LIMIT")
     register_rate_limit: str = Field(alias="REGISTER_RATE_LIMIT")
+    # /refresh and /logout are cookie-authenticated (never brute-forceable -
+    # the refresh token itself is 384 bits of entropy) but are still
+    # authentication endpoints per CLAUDE.md §12 ("rate-limit login,
+    # registration, and password-reset endpoints") and generate a database
+    # write per call, so they're bounded against abuse/resource exhaustion
+    # the same way. Defaults generously above real per-tab/device traffic.
+    refresh_rate_limit: str = Field(default="60/minute", alias="REFRESH_RATE_LIMIT")
 
     # Receipt storage/OCR: every one of these is optional by design (CLAUDE.md
     # "never hard-depend on infra that isn't actually provisioned") - absent

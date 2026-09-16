@@ -2,7 +2,7 @@
 
 import re
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.schemas.user import UserRead
 
@@ -20,6 +20,8 @@ def _validate_password_strength(value: str) -> str:
 
 
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
     password: str = Field(min_length=_PASSWORD_MIN_LENGTH, max_length=128)
     full_name: str = Field(min_length=1, max_length=200)
@@ -31,6 +33,8 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
 
