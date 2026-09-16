@@ -88,6 +88,59 @@ export async function apiRequestWithMeta<T>(
   return { data: envelope.data, meta: envelope.meta };
 }
 
+/**
+ * Like apiRequest, but sends a FormData body (multipart/form-data) instead of
+ * JSON - the one place a file upload goes through, so it stays next to every
+ * other request in this single HTTP client rather than a one-off `fetch`.
+ * The browser sets the multipart Content-Type header (with its boundary)
+ * itself; this must never set one explicitly.
+ */
+export async function apiUpload<T>(
+  path: string,
+  formData: FormData,
+  options: { accessToken?: string | null } = {}
+): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (options.accessToken) {
+    headers.Authorization = `Bearer ${options.accessToken}`;
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: formData,
+  });
+
+  const envelope = await response.json();
+  if (!response.ok) {
+    throw new ApiError(response.status, envelope.error);
+  }
+  return envelope.data as T;
+}
+
+/**
+ * Fetches a non-JSON, authenticated binary response (a receipt's stored
+ * file) as a Blob. There is no public URL for this data - every request
+ * carries the same bearer token as every other authenticated call.
+ */
+export async function apiFetchBlob(path: string, accessToken?: string | null): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, { headers, credentials: "include" });
+  if (!response.ok) {
+    const envelope = await response.json().catch(() => null);
+    throw new ApiError(
+      response.status,
+      envelope?.error ?? { code: "error", message: "Failed to load file.", field_errors: null }
+    );
+  }
+  return await response.blob();
+}
+
 /** Reads a non-httpOnly cookie by name (used for the CSRF double-submit cookie). */
 export function readCookie(name: string): string | null {
   if (typeof document === "undefined") return null;

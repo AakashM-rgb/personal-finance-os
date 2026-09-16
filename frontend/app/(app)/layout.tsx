@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: "/calendar", label: "Calendar" },
   { href: "/reports", label: "Reports" },
   { href: "/transactions", label: "Transactions" },
+  { href: "/receipts", label: "Receipts" },
   { href: "/recurring-transactions", label: "Recurring" },
   { href: "/subscriptions", label: "Subscriptions" },
   { href: "/budgets", label: "Budgets" },

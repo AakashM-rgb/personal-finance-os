@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     login_rate_limit: str = Field(alias="LOGIN_RATE_LIMIT")
     register_rate_limit: str = Field(alias="REGISTER_RATE_LIMIT")
 
+    # Receipt storage/OCR: every one of these is optional by design (CLAUDE.md
+    # "never hard-depend on infra that isn't actually provisioned") - absent
+    # config means the local filesystem / mock OCR provider, never a startup
+    # failure and never a pretend call to an external service.
+    receipt_storage_dir: str = Field(default="var/receipts", alias="RECEIPT_STORAGE_DIR")
+    s3_bucket: str | None = Field(default=None, alias="S3_BUCKET")
+    s3_region: str | None = Field(default=None, alias="S3_REGION")
+    ocr_provider: str = Field(default="mock", alias="OCR_PROVIDER")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

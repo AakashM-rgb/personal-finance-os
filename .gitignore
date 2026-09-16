@@ -33,3 +33,6 @@ Thumbs.db
 
 # Alembic (keep migrations, ignore local sqlite fallback if ever used)
 *.sqlite3
+
+# Locally-stored receipt uploads (dev-only; never commit user files)
+backend/var/
