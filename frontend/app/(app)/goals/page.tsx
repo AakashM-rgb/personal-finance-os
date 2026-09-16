@@ -77,7 +77,7 @@ export default function GoalsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
             Savings Goals
@@ -87,7 +87,9 @@ export default function GoalsPage() {
           </p>
         </div>
         {!isLoading && (
-          <Button onClick={() => setModalState({ mode: "create" })}>+ Add goal</Button>
+          <Button className="self-start sm:self-auto" onClick={() => setModalState({ mode: "create" })}>
+            + Add goal
+          </Button>
         )}
       </div>
 

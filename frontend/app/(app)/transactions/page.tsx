@@ -130,7 +130,7 @@ export default function TransactionsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">Transactions</h1>
           <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
@@ -138,7 +138,7 @@ export default function TransactionsPage() {
           </p>
         </div>
         {accounts !== null && accounts.length > 0 && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {QUICK_ACTIONS.map((action) => (
               <Button
                 key={action.type}

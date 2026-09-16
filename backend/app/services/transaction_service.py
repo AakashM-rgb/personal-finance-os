@@ -8,6 +8,7 @@ by the route layer.
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import NotFoundError, ValidationAppError
@@ -173,7 +174,28 @@ async def create_transaction(
         recurring_transaction_id=recurring_transaction_id,
     )
     txn_repo.add(transaction)
-    await txn_repo.flush()
+    try:
+        await txn_repo.flush()
+    except IntegrityError:
+        # Only reachable via a genuine race: another request with the same
+        # (user_id, idempotency_key) committed between our own "does this
+        # already exist" check above and this insert - the database's own
+        # unique constraint (not this code) is what actually prevents the
+        # double-booking. Roll back this half-open transaction, then treat
+        # it exactly like the ordinary idempotent-replay case: return the
+        # row the other request created, never a raw 500 and never a
+        # second transaction. See CLAUDE.md/offline-sync spec: "duplicate
+        # requests return/use the original transaction result rather than
+        # creating another transaction."
+        await db.rollback()
+        existing = (
+            await txn_repo.get_by_idempotency_key(user_id, idempotency_key)
+            if idempotency_key
+            else None
+        )
+        if existing is None:
+            raise
+        return _to_read(existing)
 
     await _apply_balance_effect(
         db,

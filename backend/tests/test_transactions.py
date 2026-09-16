@@ -1,4 +1,14 @@
+import asyncio
+import uuid
+
+import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.transaction import TransactionType
+from app.repositories.transaction_repository import TransactionRepository
+from app.schemas.transaction import TransactionCreate
+from app.services import transaction_service
 
 
 async def _create_account(
@@ -465,6 +475,142 @@ async def test_idempotency_key_prevents_double_booking(
 
     after = await _get_account(client, auth_headers, account["id"])
     assert after["balance_minor"] == 9000  # debited only once
+
+
+async def test_idempotency_key_is_scoped_per_user_never_shared(
+    client: AsyncClient, auth_headers: dict, other_auth_headers: dict
+) -> None:
+    """Two different users reusing the identical Idempotency-Key string
+    (e.g. both clients independently generating a predictable key, or a
+    coincidence) must never collide - the database's uniqueness constraint
+    is (user_id, idempotency_key), not idempotency_key alone. User B must
+    get their OWN transaction, never User A's, and User A's must be
+    completely unaffected by User B's request under the same key."""
+    my_account = await _create_account(client, auth_headers, balance_minor=10000)
+    their_account = await _create_account(
+        client, other_auth_headers, name="Theirs", balance_minor=5000
+    )
+    shared_key = "same-key-used-by-both-users"
+
+    mine = await client.post(
+        "/api/v1/transactions",
+        headers={**auth_headers, "Idempotency-Key": shared_key},
+        json={"account_id": my_account["id"], "type": "expense", "amount_minor": 1000},
+    )
+    theirs = await client.post(
+        "/api/v1/transactions",
+        headers={**other_auth_headers, "Idempotency-Key": shared_key},
+        json={"account_id": their_account["id"], "type": "expense", "amount_minor": 2000},
+    )
+
+    assert mine.status_code == 201, mine.text
+    assert theirs.status_code == 201, theirs.text
+    assert mine.json()["data"]["id"] != theirs.json()["data"]["id"]
+    assert mine.json()["data"]["amount_minor"] == 1000
+    assert theirs.json()["data"]["amount_minor"] == 2000
+
+    # User B replaying the SAME key must retrieve only their own
+    # transaction - never User A's, even though the key string matches.
+    theirs_replay = await client.post(
+        "/api/v1/transactions",
+        headers={**other_auth_headers, "Idempotency-Key": shared_key},
+        json={"account_id": their_account["id"], "type": "expense", "amount_minor": 2000},
+    )
+    assert theirs_replay.status_code == 201
+    assert theirs_replay.json()["data"]["id"] == theirs.json()["data"]["id"]
+    assert theirs_replay.json()["data"]["id"] != mine.json()["data"]["id"]
+
+    # Neither user's balance was affected by the other's request.
+    my_after = await _get_account(client, auth_headers, my_account["id"])
+    their_after = await _get_account(client, other_auth_headers, their_account["id"])
+    assert my_after["balance_minor"] == 9000  # 10000 - 1000, debited once
+    # 5000 - 2000, debited once - the replay under the same key never double-charged
+    assert their_after["balance_minor"] == 3000
+
+
+async def test_concurrent_idempotent_requests_never_create_two_transactions(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """Case D/H from the offline-sync spec: the same operation submitted
+    twice at (almost) the same instant - e.g. a retried request racing the
+    original after a client-side timeout - must still resolve to exactly
+    one transaction, not a raw error from the two concurrent inserts
+    colliding on the (user_id, idempotency_key) database constraint."""
+    account = await _create_account(client, auth_headers, balance_minor=10000)
+    payload = {"account_id": account["id"], "type": "expense", "amount_minor": 1500}
+    headers = {**auth_headers, "Idempotency-Key": "concurrent-retry-key"}
+
+    responses = await asyncio.gather(
+        client.post("/api/v1/transactions", headers=headers, json=payload),
+        client.post("/api/v1/transactions", headers=headers, json=payload),
+    )
+
+    for response in responses:
+        assert response.status_code == 201, response.text
+
+    ids = {response.json()["data"]["id"] for response in responses}
+    assert len(ids) == 1, "concurrent duplicate requests must resolve to the same transaction"
+
+    after = await _get_account(client, auth_headers, account["id"])
+    assert after["balance_minor"] == 8500  # debited exactly once, never twice
+
+
+async def test_service_handles_true_toctou_race_on_the_db_constraint(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deterministically forces the exact race window that
+    test_concurrent_idempotent_requests_never_create_two_transactions can
+    only probabilistically hit: a second caller whose own "does this
+    idempotency key already exist" check ran (and found nothing) BEFORE
+    the first caller's row was committed. Simulated here by monkeypatching
+    that check to always report "not found", so the second create attempt
+    proceeds straight to the INSERT and collides with the real row at the
+    database's own (user_id, idempotency_key) unique constraint - proving
+    the service recovers by returning the winning row instead of a raw
+    IntegrityError/500."""
+    account = await _create_account(client, auth_headers, balance_minor=10000)
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    user_id = uuid.UUID(me.json()["data"]["id"])
+    account_id = uuid.UUID(account["id"])
+    idempotency_key = "toctou-race-key"
+
+    data = TransactionCreate(
+        account_id=account_id, type=TransactionType.EXPENSE, amount_minor=2500
+    )
+
+    winner = await transaction_service.create_transaction(
+        db_session, user_id=user_id, data=data, idempotency_key=idempotency_key
+    )
+    await db_session.commit()
+
+    # Only the FIRST call (the pre-insert "does this already exist?" check)
+    # must lie and say "no" - the recovery re-fetch inside the fixed
+    # create_transaction's except-block must still see the real row, or
+    # this test couldn't distinguish "the fix works" from "the check is
+    # just permanently broken".
+    original_lookup = TransactionRepository.get_by_idempotency_key
+    call_count = {"n": 0}
+
+    async def _lie_once_then_real(self, *args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return None
+        return await original_lookup(self, *args, **kwargs)
+
+    monkeypatch.setattr(TransactionRepository, "get_by_idempotency_key", _lie_once_then_real)
+
+    loser_result = await transaction_service.create_transaction(
+        db_session, user_id=user_id, data=data, idempotency_key=idempotency_key
+    )
+
+    assert loser_result.id == winner.id, "the race loser must resolve to the winning row"
+    assert call_count["n"] == 2, "expected the initial lied check plus the recovery re-fetch"
+
+    after = await _get_account(client, auth_headers, account["id"])
+    assert after["balance_minor"] == 7500  # 10000 - 2500, debited exactly once
 
 
 # --- filtering, search, sort, pagination --------------------------------------

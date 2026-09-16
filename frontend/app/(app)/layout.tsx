@@ -4,8 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
+import { MobileBottomNav } from "@/components/nav/mobile-bottom-nav";
+import { SyncStatusIndicator } from "@/components/nav/sync-status-indicator";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
+import { useOfflineSync } from "@/lib/offline/use-offline-sync";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard" },
@@ -24,8 +27,9 @@ const NAV_ITEMS = [
 ];
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, isLoading, logout } = useAuth();
+  const { user, isLoading, logout, accessToken } = useAuth();
   const router = useRouter();
+  const offlineSync = useOfflineSync(user?.id ?? null, accessToken);
 
   useEffect(() => {
     if (!isLoading && !user) {
@@ -47,10 +51,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex flex-1 flex-col sm:flex-row">
-      <aside className="flex flex-row items-center justify-between gap-4 border-b border-zinc-200 p-4 sm:w-56 sm:flex-col sm:items-stretch sm:justify-start sm:border-b-0 sm:border-r sm:p-6 dark:border-zinc-800">
+    <div className="flex flex-1 flex-col md:flex-row">
+      {/* Tablet-landscape and up: persistent sidebar. Below that, the
+          MobileBottomNav (rendered further down) is the primary nav - this
+          is a distinct layout for touch/one-handed use, never a shrunk
+          copy of this sidebar (CLAUDE.md §18). */}
+      <aside className="hidden border-r border-zinc-200 p-6 md:flex md:w-56 md:flex-col md:items-stretch dark:border-zinc-800">
         <span className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Finance App</span>
-        <nav className="flex flex-1 gap-2 sm:mt-8 sm:flex-col">
+        <nav className="mt-8 flex flex-1 flex-col gap-2">
           {NAV_ITEMS.map((item) => (
             <Link
               key={item.href}
@@ -64,14 +72,27 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex flex-1 flex-col">
-        <header className="flex items-center justify-end gap-3 border-b border-zinc-200 px-4 py-3 sm:px-8 dark:border-zinc-800">
-          <span className="text-sm text-zinc-600 dark:text-zinc-400">{user.full_name}</span>
-          <Button variant="secondary" onClick={() => void logout().then(() => router.replace("/login"))}>
-            Log out
-          </Button>
+        <header className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3 sm:justify-end md:px-8 dark:border-zinc-800">
+          <span className="text-lg font-semibold text-zinc-900 md:hidden dark:text-zinc-50">
+            Finance App
+          </span>
+          <div className="flex items-center gap-3">
+            <SyncStatusIndicator state={offlineSync} />
+            <span className="hidden text-sm text-zinc-600 sm:inline dark:text-zinc-400">
+              {user.full_name}
+            </span>
+            <Button
+              variant="secondary"
+              onClick={() => void logout().then(() => router.replace("/login"))}
+            >
+              Log out
+            </Button>
+          </div>
         </header>
-        <main className="flex-1 p-4 sm:p-8">{children}</main>
+        <main className="flex-1 p-4 pb-24 sm:p-8 md:pb-8">{children}</main>
       </div>
+
+      <MobileBottomNav onExpenseCreated={offlineSync.refresh} />
     </div>
   );
 }

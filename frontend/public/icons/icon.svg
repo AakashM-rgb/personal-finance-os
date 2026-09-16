@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Finance App icon">
+  <rect width="512" height="512" rx="96" fill="#18181b"/>
+  <g fill="none" stroke="#fafafa" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="112" y="176" width="288" height="208" rx="24"/>
+    <path d="M112 224h288"/>
+    <circle cx="336" cy="304" r="20" fill="#fafafa" stroke="none"/>
+  </g>
+</svg>
