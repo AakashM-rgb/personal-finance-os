@@ -32,6 +32,9 @@ dev = [
 s3 = [
   "boto3>=1.35",
 ]
+ai = [
+  "anthropic>=0.39",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

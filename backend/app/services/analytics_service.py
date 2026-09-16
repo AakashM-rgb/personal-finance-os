@@ -93,7 +93,7 @@ async def _build_spending_over_time(
     )
 
 
-async def _build_category_breakdown(
+async def build_category_breakdown(
     db: AsyncSession,
     txn_repo: TransactionRepository,
     user_id: uuid.UUID,
@@ -214,7 +214,7 @@ async def _build_daily_spending(
     )
 
 
-async def _build_recurring_expense_breakdown(
+async def build_recurring_expense_breakdown(
     db: AsyncSession,
     txn_repo: TransactionRepository,
     user_id: uuid.UUID,
@@ -300,7 +300,7 @@ async def get_analytics(
     spending_over_time = await _build_spending_over_time(
         txn_repo, user_id, date_from, date_to, currency
     )
-    category_breakdown = await _build_category_breakdown(
+    category_breakdown = await build_category_breakdown(
         db, txn_repo, user_id, date_from, date_to, currency
     )
     monthly_rows = await txn_repo.sum_income_and_expense_by_month(
@@ -312,7 +312,7 @@ async def get_analytics(
     daily_spending = await _build_daily_spending(
         txn_repo, user_id, date_from, date_to, currency, spending_over_time
     )
-    recurring_expense_breakdown = await _build_recurring_expense_breakdown(
+    recurring_expense_breakdown = await build_recurring_expense_breakdown(
         db,
         txn_repo,
         user_id,

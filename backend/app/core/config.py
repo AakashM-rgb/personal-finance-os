@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     s3_region: str | None = Field(default=None, alias="S3_REGION")
     ocr_provider: str = Field(default="mock", alias="OCR_PROVIDER")
 
+    # Financial AI Assistant: AnthropicProvider is used automatically once
+    # ANTHROPIC_API_KEY is set; otherwise the deterministic MockProvider runs
+    # (CLAUDE.md - "never hard-depend on infra that isn't actually provisioned",
+    # "MockProvider is used automatically when no API key is configured").
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    ai_model: str = Field(default="claude-sonnet-5", alias="AI_MODEL")
+    ai_rate_limit: str = Field(default="20/minute", alias="AI_RATE_LIMIT")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

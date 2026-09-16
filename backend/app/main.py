@@ -6,7 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.errors import register_exception_handlers
+from app.core.logging import configure_app_logging
 from app.core.rate_limit import limiter
+
+configure_app_logging()
 
 settings = get_settings()
 
