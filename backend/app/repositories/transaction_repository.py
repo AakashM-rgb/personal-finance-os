@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
-from sqlalchemy import ColumnExpressionArgument, case, func, or_, select
+from sqlalchemy import ColumnExpressionArgument, case, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.transaction import Transaction, TransactionType
@@ -26,6 +26,14 @@ class TransactionFilters:
     amount_min: int | None = None
     amount_max: int | None = None
     is_recurring: bool | None = None
+    # Predefined, server-computed filters used by the natural-language
+    # search feature (app.search) - never populated from raw AI/user text
+    # directly. `days_of_week` uses Postgres's own EXTRACT(DOW) convention
+    # (0=Sunday..6=Saturday); `recurring_transaction_ids` is the caller's
+    # already-resolved set of a user's OWN subscription schedule ids (see
+    # app.search.query_builder), not an arbitrary id list.
+    days_of_week: list[int] | None = None
+    recurring_transaction_ids: list[uuid.UUID] | None = None
     tags: list[str] = field(default_factory=list)
     sort_by: SortField = "occurred_at"
     sort_dir: SortDirection = "desc"
@@ -75,6 +83,21 @@ class TransactionRepository:
         if filters.tags:
             # overlap: matches if the transaction has ANY of the requested tags
             conditions.append(Transaction.tags.overlap(filters.tags))
+        if filters.days_of_week:
+            # Pinned to UTC explicitly, same reasoning as sum_expense_by_period's
+            # date_trunc calls: Postgres's EXTRACT(DOW FROM timestamptz) uses the
+            # session's TimeZone setting otherwise, which can shift a timestamp
+            # near midnight onto the wrong day of week.
+            day_of_week = func.extract("dow", func.timezone("UTC", Transaction.occurred_at))
+            conditions.append(day_of_week.in_(filters.days_of_week))
+        if filters.recurring_transaction_ids is not None:
+            # An explicitly empty list (e.g. a user with zero subscriptions)
+            # must match nothing - never silently fall back to "no filter".
+            conditions.append(
+                Transaction.recurring_transaction_id.in_(filters.recurring_transaction_ids)
+                if filters.recurring_transaction_ids
+                else false()
+            )
 
         return conditions
 

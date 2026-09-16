@@ -14,6 +14,7 @@ from app.api.v1 import (
     receipts,
     recurring_transactions,
     reports,
+    search,
     subscriptions,
     transactions,
 )
@@ -34,3 +35,4 @@ api_router.include_router(calendar.router)
 api_router.include_router(reports.router)
 api_router.include_router(receipts.router)
 api_router.include_router(ai.router)
+api_router.include_router(search.router)

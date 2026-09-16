@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     ai_model: str = Field(default="claude-sonnet-5", alias="AI_MODEL")
     ai_rate_limit: str = Field(default="20/minute", alias="AI_RATE_LIMIT")
 
+    # Natural-Language Financial Search.
+    search_rate_limit: str = Field(default="30/minute", alias="SEARCH_RATE_LIMIT")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

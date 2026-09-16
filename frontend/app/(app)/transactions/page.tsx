@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { NaturalLanguageSearch } from "@/components/search/natural-language-search";
 import { QuickAddBar } from "@/components/transactions/quick-add-bar";
 import { TransactionDetails } from "@/components/transactions/transaction-details";
 import { TransactionFiltersBar } from "@/components/transactions/transaction-filters";
@@ -52,6 +53,7 @@ export default function TransactionsPage() {
   const [error, setError] = useState<string | null>(null);
   const [modalState, setModalState] = useState<ModalState>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [isSmartSearchActive, setIsSmartSearchActive] = useState(false);
   const [filters, setFilters] = useState<TransactionFilters>({
     sort_by: "occurred_at",
     sort_dir: "desc",
@@ -164,16 +166,19 @@ export default function TransactionsPage() {
       {accounts !== null && accounts.length > 0 && categories !== null && (
         <>
           <QuickAddBar accounts={accounts} categories={categories} onCreated={reload} />
-          <TransactionFiltersBar
-            accounts={accounts}
-            categories={categories}
-            filters={filters}
-            onChange={setFilters}
-          />
+          <NaturalLanguageSearch onActiveChange={setIsSmartSearchActive} />
+          {!isSmartSearchActive && (
+            <TransactionFiltersBar
+              accounts={accounts}
+              categories={categories}
+              filters={filters}
+              onChange={setFilters}
+            />
+          )}
         </>
       )}
 
-      {error && (
+      {!isSmartSearchActive && error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
           {error}{" "}
           <button type="button" onClick={reload} className="font-medium underline">
@@ -182,7 +187,7 @@ export default function TransactionsPage() {
         </div>
       )}
 
-      {isLoading && !error && (
+      {!isSmartSearchActive && isLoading && !error && (
         <div className="flex flex-col gap-2">
           {[1, 2, 3, 4, 5].map((i) => (
             <Skeleton key={i} className="h-16" />
@@ -190,7 +195,7 @@ export default function TransactionsPage() {
         </div>
       )}
 
-      {!isLoading && transactions !== null && transactions.length === 0 && (
+      {!isSmartSearchActive && !isLoading && transactions !== null && transactions.length === 0 && (
         <div className="rounded-xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
           <p className="text-sm text-zinc-600 dark:text-zinc-400">
             No transactions match your filters yet.
@@ -198,7 +203,7 @@ export default function TransactionsPage() {
         </div>
       )}
 
-      {!isLoading && transactions !== null && transactions.length > 0 && (
+      {!isSmartSearchActive && !isLoading && transactions !== null && transactions.length > 0 && (
         <Card>
           {transactions.map((transaction) => (
             <TransactionRow
