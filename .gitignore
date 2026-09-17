@@ -31,6 +31,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Claude Code runtime state (session locks, etc.) - not project source
+.claude/
+
 # Alembic (keep migrations, ignore local sqlite fallback if ever used)
 *.sqlite3
 

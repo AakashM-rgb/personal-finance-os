@@ -12,7 +12,7 @@ export function StatCard({ label, value, sublabel, delta }: StatCardProps) {
   return (
     <Card className="flex flex-col gap-1">
       <span className="text-sm text-zinc-500 dark:text-zinc-400">{label}</span>
-      <span className="text-2xl font-semibold text-zinc-900 [font-variant-numeric:proportional-nums] dark:text-zinc-50">
+      <span className="text-2xl font-semibold text-zinc-900 [font-variant-numeric:proportional-nums] break-words dark:text-zinc-50">
         {value}
       </span>
       {sublabel && <span className="text-xs text-zinc-500 dark:text-zinc-400">{sublabel}</span>}
