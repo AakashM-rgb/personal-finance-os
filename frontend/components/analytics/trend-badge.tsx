@@ -5,7 +5,10 @@ const TONE_STYLES: Record<string, string> = {
   positive: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
   negative: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400",
   neutral: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
-  unknown: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
+  // zinc-500 on the zinc-100 badge background is 4.39:1, just under WCAG
+  // AA's 4.5:1 for normal-size text (verified with axe-core) - matching
+  // the "neutral" tone's already-passing zinc-600 clears it.
+  unknown: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
 };
 
 const DIRECTION_LABEL: Record<string, string> = {

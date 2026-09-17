@@ -38,7 +38,11 @@ ALEMBIC_DATABASE_URL="<test db url>" .venv/Scripts/alembic upgrade head  # and t
 ```bash
 cd frontend
 npm install
-cp .env.example .env.local    # points at the backend, defaults to http://127.0.0.1:8000
+cp .env.example .env.local    # points at the backend, defaults to http://localhost:8000
+                               # (must share a hostname with the frontend - e.g. both
+                               # `localhost` - never `127.0.0.1` here: cookies are scoped
+                               # per-hostname, and the CSRF cookie has to be readable by
+                               # this frontend's own JavaScript to restore a session)
 
 npm run dev          # http://localhost:3000
 npm run test         # vitest

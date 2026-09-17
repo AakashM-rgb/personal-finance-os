@@ -40,11 +40,11 @@ export function MonthNavigator({ year, month, onChange }: MonthNavigatorProps) {
   }
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       <Button variant="secondary" onClick={goToPreviousMonth} aria-label="Previous month">
         &larr;
       </Button>
-      <h2 className="min-w-40 text-center text-lg font-semibold text-zinc-900 dark:text-zinc-50">
+      <h2 className="min-w-32 text-center text-lg font-semibold text-zinc-900 sm:min-w-40 dark:text-zinc-50">
         {MONTH_NAMES[month - 1]} {year}
       </h2>
       <Button variant="secondary" onClick={goToNextMonth} aria-label="Next month">

@@ -118,7 +118,12 @@ export default function AiAssistantPage() {
       <ChatInput onSend={handleSend} isLoading={isLoading} />
 
       {disclaimer && (
-        <p className="text-center text-xs text-zinc-400 dark:text-zinc-500">{disclaimer}</p>
+        // Same text-zinc-400-on-white combination measured at 2.62:1 on the
+        // categories page's "Default" label (verified with axe-core, well
+        // under WCAG AA's 4.5:1) - this disclaimer only renders after the
+        // first reply, so the automated scan didn't independently visit it,
+        // but the color math is identical regardless of page.
+        <p className="text-center text-xs text-zinc-600 dark:text-zinc-500">{disclaimer}</p>
       )}
     </div>
   );

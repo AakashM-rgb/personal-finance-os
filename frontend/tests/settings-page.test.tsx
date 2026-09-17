@@ -59,6 +59,13 @@ describe("SettingsPage", () => {
       currency: "INR",
       theme: "system",
       ai_enabled: true,
+      notification_preferences: {
+        budget_warnings: true,
+        payment_reminders: true,
+        goal_milestones: true,
+        unusual_spending: true,
+        recurring_reminders: true,
+      },
     });
     vi.spyOn(sessionsLib, "listSessions").mockResolvedValue([
       {
@@ -114,6 +121,13 @@ describe("SettingsPage", () => {
       currency: "INR",
       theme: "system",
       ai_enabled: true,
+      notification_preferences: {
+        budget_warnings: true,
+        payment_reminders: true,
+        goal_milestones: true,
+        unusual_spending: true,
+        recurring_reminders: true,
+      },
     });
     vi.spyOn(sessionsLib, "listSessions").mockResolvedValue([]);
 

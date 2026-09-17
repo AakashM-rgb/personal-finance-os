@@ -177,22 +177,35 @@ async def create_transaction(
     try:
         await txn_repo.flush()
     except IntegrityError:
-        # Only reachable via a genuine race: another request with the same
-        # (user_id, idempotency_key) committed between our own "does this
-        # already exist" check above and this insert - the database's own
-        # unique constraint (not this code) is what actually prevents the
-        # double-booking. Roll back this half-open transaction, then treat
-        # it exactly like the ordinary idempotent-replay case: return the
-        # row the other request created, never a raw 500 and never a
-        # second transaction. See CLAUDE.md/offline-sync spec: "duplicate
-        # requests return/use the original transaction result rather than
-        # creating another transaction."
+        # Only reachable via a genuine race: either another request with the
+        # same (user_id, idempotency_key), or - when generating recurring
+        # occurrences - another concurrent "generate" call for the same
+        # (recurring_transaction_id, occurred_at), committed between our own
+        # "does this already exist" check and this insert. Either way, the
+        # database's own unique constraint (not this code) is what actually
+        # prevents the double-booking. Roll back this half-open transaction,
+        # then treat it exactly like the ordinary idempotent-replay case:
+        # return the row the other request created, never a raw 500 and
+        # never a second transaction. See CLAUDE.md/offline-sync spec:
+        # "duplicate requests return/use the original transaction result
+        # rather than creating another transaction."
+        #
+        # This rollback expires every ORM object already loaded on `db`,
+        # not just `transaction` - a caller iterating its own already-loaded
+        # objects across multiple create_transaction calls (see
+        # app.services.recurring_transaction_service._generate_due_occurrences)
+        # must not touch their attributes again afterwards without an
+        # explicit re-fetch, or a plain attribute access will try to
+        # implicitly reload an expired attribute outside of any awaited
+        # call and raise MissingGreenlet.
         await db.rollback()
-        existing = (
-            await txn_repo.get_by_idempotency_key(user_id, idempotency_key)
-            if idempotency_key
-            else None
-        )
+        existing = None
+        if idempotency_key:
+            existing = await txn_repo.get_by_idempotency_key(user_id, idempotency_key)
+        elif recurring_transaction_id is not None:
+            existing = await txn_repo.get_by_recurring_occurrence(
+                recurring_transaction_id, transaction.occurred_at
+            )
         if existing is None:
             raise
         return _to_read(existing)

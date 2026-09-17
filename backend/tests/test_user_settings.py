@@ -1,5 +1,13 @@
 from httpx import AsyncClient
 
+DEFAULT_NOTIFICATION_PREFERENCES = {
+    "budget_warnings": True,
+    "payment_reminders": True,
+    "goal_milestones": True,
+    "unusual_spending": True,
+    "recurring_reminders": True,
+}
+
 
 async def test_get_settings_requires_authentication(client: AsyncClient) -> None:
     response = await client.get("/api/v1/settings")
@@ -11,7 +19,12 @@ async def test_get_settings_returns_defaults_for_a_new_user(
 ) -> None:
     response = await client.get("/api/v1/settings", headers=auth_headers)
     assert response.status_code == 200
-    assert response.json()["data"] == {"currency": "INR", "theme": "system", "ai_enabled": True}
+    assert response.json()["data"] == {
+        "currency": "INR",
+        "theme": "system",
+        "ai_enabled": True,
+        "notification_preferences": DEFAULT_NOTIFICATION_PREFERENCES,
+    }
 
 
 async def test_patch_settings_requires_authentication(client: AsyncClient) -> None:
@@ -104,7 +117,90 @@ async def test_patch_settings_partial_update_leaves_other_fields_untouched(
         "/api/v1/settings", headers=auth_headers, json={"theme": "light"}
     )
     assert response.status_code == 200
-    assert response.json()["data"] == {"currency": "EUR", "theme": "light", "ai_enabled": True}
+    assert response.json()["data"] == {
+        "currency": "EUR",
+        "theme": "light",
+        "ai_enabled": True,
+        "notification_preferences": DEFAULT_NOTIFICATION_PREFERENCES,
+    }
+
+
+async def test_patch_settings_disables_one_notification_category(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    response = await client.patch(
+        "/api/v1/settings",
+        headers=auth_headers,
+        json={"notification_preferences": {"budget_warnings": False}},
+    )
+    assert response.status_code == 200
+    prefs = response.json()["data"]["notification_preferences"]
+    assert prefs["budget_warnings"] is False
+    # Every other category is left exactly as it was - a partial patch,
+    # not a wholesale replace.
+    assert prefs["payment_reminders"] is True
+    assert prefs["goal_milestones"] is True
+    assert prefs["unusual_spending"] is True
+    assert prefs["recurring_reminders"] is True
+
+    get_response = await client.get("/api/v1/settings", headers=auth_headers)
+    assert get_response.json()["data"]["notification_preferences"]["budget_warnings"] is False
+
+
+async def test_patch_settings_re_enables_a_disabled_category(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    await client.patch(
+        "/api/v1/settings",
+        headers=auth_headers,
+        json={"notification_preferences": {"unusual_spending": False}},
+    )
+    response = await client.patch(
+        "/api/v1/settings",
+        headers=auth_headers,
+        json={"notification_preferences": {"unusual_spending": True}},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["notification_preferences"]["unusual_spending"] is True
+
+
+async def test_patch_settings_rejects_unknown_notification_preference_field(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    response = await client.patch(
+        "/api/v1/settings",
+        headers=auth_headers,
+        json={"notification_preferences": {"totally_made_up_category": False}},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+async def test_patch_settings_rejects_non_boolean_notification_preference_value(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    response = await client.patch(
+        "/api/v1/settings",
+        headers=auth_headers,
+        json={"notification_preferences": {"budget_warnings": "yes please"}},
+    )
+    assert response.status_code == 422
+
+
+async def test_notification_preferences_are_isolated_per_user(
+    client: AsyncClient, auth_headers: dict, other_auth_headers: dict
+) -> None:
+    await client.patch(
+        "/api/v1/settings",
+        headers=auth_headers,
+        json={"notification_preferences": {"budget_warnings": False}},
+    )
+
+    own_response = await client.get("/api/v1/settings", headers=auth_headers)
+    other_response = await client.get("/api/v1/settings", headers=other_auth_headers)
+
+    assert own_response.json()["data"]["notification_preferences"]["budget_warnings"] is False
+    assert other_response.json()["data"]["notification_preferences"]["budget_warnings"] is True
 
 
 async def test_settings_are_isolated_per_user(

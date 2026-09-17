@@ -9,7 +9,9 @@ interface StatTileProps {
 
 const TONE_CLASSES: Record<Required<StatTileProps>["tone"], string> = {
   default: "text-zinc-900 dark:text-zinc-50",
-  positive: "text-emerald-600 dark:text-emerald-400",
+  // emerald-600 on a white background is 3.65:1, below WCAG AA's 4.5:1 for
+  // normal-size text (verified with axe-core) - emerald-700 clears it.
+  positive: "text-emerald-700 dark:text-emerald-400",
   negative: "text-red-600 dark:text-red-400",
 };
 

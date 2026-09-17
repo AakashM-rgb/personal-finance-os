@@ -52,7 +52,9 @@ export function CategoryRow({ category, isChild, onEdit, onDelete }: CategoryRow
       </div>
 
       {category.is_system ? (
-        <span className="text-xs text-zinc-400 dark:text-zinc-500">Default</span>
+        // zinc-400 on white is 2.62:1, well under WCAG AA's 4.5:1 for
+        // normal-size text (verified with axe-core) - zinc-600 clears it.
+        <span className="text-xs text-zinc-600 dark:text-zinc-500">Default</span>
       ) : isConfirmingDelete ? (
         <div className="flex gap-2">
           <Button variant="secondary" onClick={() => setIsConfirmingDelete(false)}>

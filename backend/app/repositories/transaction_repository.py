@@ -582,6 +582,16 @@ class TransactionRepository:
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_recurring_occurrence(
+        self, recurring_transaction_id: uuid.UUID, occurred_at: datetime
+    ) -> Transaction | None:
+        stmt = select(Transaction).where(
+            Transaction.recurring_transaction_id == recurring_transaction_id,
+            Transaction.occurred_at == occurred_at,
+        )
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
     def add(self, transaction: Transaction) -> None:
         self._db.add(transaction)
 

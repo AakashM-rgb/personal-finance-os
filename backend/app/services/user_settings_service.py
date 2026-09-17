@@ -2,7 +2,9 @@
 apply partial updates. `ai_enabled` changes take effect immediately - the AI
 tool layer (app.services.ai_assistant_service) re-reads this same row on
 every request rather than caching it, so there is no separate place that
-also needs to be told the setting changed."""
+also needs to be told the setting changed. `notification_preferences`
+changes are read the same way, by app.services.notification_service on its
+next generation pass - there is no cache to invalidate there either."""
 
 import uuid
 
@@ -36,6 +38,16 @@ async def update_settings(
         settings.theme = data.theme
     if data.ai_enabled is not None:
         settings.ai_enabled = data.ai_enabled
+    if data.notification_preferences is not None:
+        # Merged, not replaced - {"budget_warnings": false} only touches
+        # that one category, leaving every other stored preference as-is.
+        # Reassigning the whole dict (rather than mutating the existing one
+        # in place) is what SQLAlchemy needs to see a JSONB column as
+        # changed and actually write the update.
+        settings.notification_preferences = {
+            **settings.notification_preferences,
+            **data.notification_preferences,
+        }
 
     await repo.flush()
     return UserSettingsRead.model_validate(settings)

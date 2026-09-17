@@ -5,7 +5,18 @@ import { PreferencesSection } from "@/components/settings/preferences-section";
 import { ApiError } from "@/lib/api-client";
 import * as settingsLib from "@/lib/settings";
 
-const BASE_SETTINGS = { currency: "INR", theme: "system" as const, ai_enabled: true };
+const BASE_SETTINGS = {
+  currency: "INR",
+  theme: "system" as const,
+  ai_enabled: true,
+  notification_preferences: {
+    budget_warnings: true,
+    payment_reminders: true,
+    goal_milestones: true,
+    unusual_spending: true,
+    recurring_reminders: true,
+  },
+};
 
 afterEach(() => {
   vi.restoreAllMocks();

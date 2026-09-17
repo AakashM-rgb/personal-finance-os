@@ -30,8 +30,13 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files - .env.example is a template with placeholder values only and
+# must stay committed (see CLAUDE.md's env-var rules and README.md's setup
+# steps, which `cp` it into .env.local); without this negation, the blanket
+# .env* pattern above silently also matched .env.example, so it was never
+# actually tracked - a fresh clone had no file for that `cp` step to copy.
 .env*
+!.env.example
 
 # vercel
 .vercel

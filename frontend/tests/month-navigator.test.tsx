@@ -44,4 +44,14 @@ describe("MonthNavigator", () => {
     const now = new Date();
     expect(onChange).toHaveBeenCalledWith(now.getFullYear(), now.getMonth() + 1);
   });
+
+  it("allows its row to wrap instead of overflowing at narrow widths", () => {
+    // Regression test: the four controls (prev, month label, next, Today)
+    // plus their gaps didn't fit on one line at 375px wide - found live via
+    // Playwright as a 2px horizontal page overflow on the Calendar page.
+    // Without flex-wrap here, a too-narrow container has nowhere for the
+    // overflowing content to go but past the viewport edge.
+    const { container } = render(<MonthNavigator year={2026} month={9} onChange={vi.fn()} />);
+    expect(container.firstElementChild).toHaveClass("flex-wrap");
+  });
 });

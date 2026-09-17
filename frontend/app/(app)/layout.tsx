@@ -6,6 +6,7 @@ import { useEffect } from "react";
 
 import { MobileBottomNav } from "@/components/nav/mobile-bottom-nav";
 import { SyncStatusIndicator } from "@/components/nav/sync-status-indicator";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
 import { useOfflineSync } from "@/lib/offline/use-offline-sync";
@@ -78,6 +79,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </span>
           <div className="flex items-center gap-3">
             <SyncStatusIndicator state={offlineSync} />
+            {accessToken && <NotificationBell accessToken={accessToken} />}
             <span className="hidden text-sm text-zinc-600 sm:inline dark:text-zinc-400">
               {user.full_name}
             </span>

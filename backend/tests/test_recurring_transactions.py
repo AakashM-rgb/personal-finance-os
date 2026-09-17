@@ -634,6 +634,66 @@ async def test_generate_repeatedly_stays_idempotent_across_many_calls(
     assert len(linked) == 1
 
 
+async def test_concurrent_generate_hits_db_backstop_without_500(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+) -> None:
+    """Regression test: two "generate" calls racing to materialize the same
+    (recurring_transaction_id, occurred_at) occurrence used to surface as an
+    unhandled 500 - the DB's uq_transactions_recurring_occurrence constraint
+    correctly stopped the duplicate row, but the IntegrityError it raised
+    was only ever caught for the sibling idempotency-key race, not this one,
+    so it propagated as a raw internal_error instead of a clean, idempotent
+    response. Calling transaction_service.create_transaction directly twice
+    for the exact same occurrence reproduces that race deterministically
+    (no thread timing needed) against the real unique constraint."""
+    import uuid as uuid_module
+
+    from app.schemas.transaction import TransactionCreate
+    from app.services import transaction_service
+
+    account = await _create_account(client, auth_headers)
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    user_id = uuid_module.UUID(me.json()["data"]["id"])
+    recurring = await _create_recurring(client, auth_headers, account["id"], frequency="daily")
+    recurring_id = uuid_module.UUID(recurring["id"])
+
+    occurrence = TransactionCreate(
+        account_id=uuid_module.UUID(account["id"]),
+        type="expense",
+        amount_minor=64900,
+        occurred_at=date.today().isoformat() + "T00:00:00Z",  # type: ignore[arg-type]
+    )
+
+    first = await transaction_service.create_transaction(
+        db_session,
+        user_id=user_id,
+        data=occurrence,
+        idempotency_key=None,
+        recurring_transaction_id=recurring_id,
+    )
+    await db_session.commit()
+
+    # Simulates the losing side of a concurrent "generate" call landing on
+    # the exact same occurrence - must not raise/500, and must not create a
+    # second transaction; it should transparently return the winning row.
+    second = await transaction_service.create_transaction(
+        db_session,
+        user_id=user_id,
+        data=occurrence,
+        idempotency_key=None,
+        recurring_transaction_id=recurring_id,
+    )
+    await db_session.commit()
+
+    assert second.id == first.id
+
+    all_transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    linked = [
+        t for t in all_transactions.json()["data"] if t["recurring_transaction_id"] is not None
+    ]
+    assert len(linked) == 1  # the race never produced a duplicate transaction
+
+
 async def test_generated_transaction_updates_account_balance(
     client: AsyncClient, auth_headers: dict
 ) -> None:

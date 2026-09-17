@@ -26,3 +26,14 @@ class UserRepository:
         self._db.add(user)
         await self._db.flush()
         return user
+
+    async def list_all_ids(self) -> list[uuid.UUID]:
+        """Every user's id, active or not - used only by
+        app.services.notification_service's system-wide generation sweep,
+        which runs each user's detectors independently rather than a single
+        cross-user query (unlike the recurring-transaction sweep, there is
+        no single underlying table this could batch across, since budgets/
+        goals/subscriptions/recurring/transactions are five different
+        sources)."""
+        result = await self._db.execute(select(User.id))
+        return list(result.scalars().all())

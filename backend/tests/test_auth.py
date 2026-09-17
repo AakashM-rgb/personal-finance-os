@@ -18,6 +18,39 @@ async def test_register_creates_user_and_returns_access_token(
     assert "refresh_token" in response.cookies
 
 
+async def test_csrf_cookie_is_readable_from_every_frontend_route(
+    client: AsyncClient, register_payload: dict
+) -> None:
+    """Regression test: the CSRF cookie must be scoped to Path=/, not the
+    narrower /api/v1/auth path the refresh-token cookie uses. Its whole
+    purpose (see app.auth.dependencies.verify_csrf's docstring) is for the
+    frontend's own JavaScript to read it via document.cookie and echo it
+    back as a header - but document.cookie only exposes cookies whose Path
+    matches the current page's path, and no frontend page is ever served
+    from /api/v1/auth (that belongs to the separate backend deployable).
+    Scoping it to /api/v1/auth silently broke the app's mount-time "restore
+    my session after a hard reload" check on every single frontend route,
+    logging every user out on refresh. The refresh_token cookie itself is
+    httpOnly and correctly stays scoped to /api/v1/auth - only the
+    JS-readable CSRF cookie needs the wider path."""
+    response = await client.post("/api/v1/auth/register", json=register_payload)
+    assert response.status_code == 200
+    set_cookie_headers = response.headers.get_list("set-cookie")
+
+    def cookie_path(header: str) -> str:
+        for part in header.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key.lower() == "path":
+                return value
+        raise AssertionError(f"no Path attribute on cookie header: {header!r}")
+
+    csrf_header = next(h for h in set_cookie_headers if h.startswith("csrf_token="))
+    assert cookie_path(csrf_header) == "/"
+
+    refresh_header = next(h for h in set_cookie_headers if h.startswith("refresh_token="))
+    assert cookie_path(refresh_header) == "/api/v1/auth"
+
+
 async def test_register_rejects_duplicate_email(
     client: AsyncClient, register_payload: dict
 ) -> None:

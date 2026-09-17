@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { NotificationsSection } from "@/components/settings/notifications-section";
 import { PreferencesSection } from "@/components/settings/preferences-section";
 import { ProfileSection } from "@/components/settings/profile-section";
 import { SecuritySection } from "@/components/settings/security-section";
@@ -73,6 +74,7 @@ export default function SettingsPage() {
       {settings !== null && accessToken && (
         <>
           <PreferencesSection accessToken={accessToken} settings={settings} />
+          <NotificationsSection accessToken={accessToken} settings={settings} />
           <SecuritySection accessToken={accessToken} />
         </>
       )}

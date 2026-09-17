@@ -223,29 +223,56 @@ async def _generate_due_occurrences(
     been generated yet - one call catches up an arbitrarily long gap
     (including one that has never generated anything, e.g. a past
     start_date), and calling it again with nothing new due is a no-op:
-    _compute_next_occurrence will already point past `today`."""
+    _compute_next_occurrence will already point past `today`.
+
+    Every `recurring.*` value the loop needs is read into a plain local
+    before the loop starts, not re-read from the ORM object on each
+    iteration: transaction_service.create_transaction may roll back this
+    session on a concurrent-generation race (see its own docstring), and an
+    async session expires every loaded ORM instance on rollback - a later
+    `recurring.frequency` access would then try an implicit lazy-reload,
+    which raises MissingGreenlet outside of an awaited context instead of
+    quietly refetching. None of these values change during generation, so
+    capturing them up front is also just as correct.
+
+    The `refresh` below guards the same hazard one level up: when
+    generate_due_for_user's caller processes several recurring definitions
+    in one call, an earlier one's race (and the resulting rollback) expires
+    `recurring` for every definition still queued, including this one -
+    refreshing first, before any attribute is read, guarantees a clean
+    object no matter what happened to a previous definition in the same
+    request."""
+    await db.refresh(recurring)
+    user_id = recurring.user_id
+    account_id = recurring.account_id
+    transaction_type = recurring.type
+    amount_minor = recurring.amount_minor
+    category_id = recurring.category_id
+    name = recurring.name
+    recurring_id = recurring.id
+    frequency = recurring.frequency
+    day_of_month = recurring.day_of_month
+
     generated: list[TransactionRead] = []
     current = await _compute_next_occurrence(db, recurring)
 
     while current <= today:
         transaction = await transaction_service.create_transaction(
             db,
-            user_id=recurring.user_id,
+            user_id=user_id,
             data=TransactionCreate(
-                account_id=recurring.account_id,
-                type=recurring.type,
-                amount_minor=recurring.amount_minor,
-                category_id=recurring.category_id,
-                description=recurring.name,
+                account_id=account_id,
+                type=transaction_type,
+                amount_minor=amount_minor,
+                category_id=category_id,
+                description=name,
                 occurred_at=datetime.combine(current, time.min, tzinfo=UTC),
             ),
             idempotency_key=None,
-            recurring_transaction_id=recurring.id,
+            recurring_transaction_id=recurring_id,
         )
         generated.append(transaction)
-        current = next_occurrence_date(
-            current, recurring.frequency, day_of_month=recurring.day_of_month
-        )
+        current = next_occurrence_date(current, frequency, day_of_month=day_of_month)
 
     return generated
 
