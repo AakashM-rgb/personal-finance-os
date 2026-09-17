@@ -463,6 +463,169 @@ async def test_goal_below_first_milestone_creates_no_notification(
     assert await _by_category(notifications, "goal_milestone") == []
 
 
+async def test_goal_milestone_message_states_amount_for_that_milestone_on_full_backfill(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    # Jumping straight from 0% to 100% backfills all four milestones in one
+    # generation pass - each message must quote ITS OWN threshold amount
+    # (target * milestone%), not the goal's final current_amount_minor.
+    response = await client.post(
+        "/api/v1/goals",
+        headers=auth_headers,
+        json={
+            "name": "Amount Check",
+            "target_amount_minor": 1000000,
+            "current_amount_minor": 1000000,
+            "target_date": "2027-06-01",
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    notifications = await _list_notifications(client, auth_headers)
+    milestones = await _by_category(notifications, "goal_milestone")
+    by_title = {n["title"]: n["message"] for n in milestones}
+    assert len(by_title) == 4
+
+    assert by_title["Amount Check is 25% funded"] == (
+        "You've saved 2500.00 INR of your 10000.00 INR target for Amount Check."
+    )
+    assert by_title["Amount Check is 50% funded"] == (
+        "You've saved 5000.00 INR of your 10000.00 INR target for Amount Check."
+    )
+    assert by_title["Amount Check is 75% funded"] == (
+        "You've saved 7500.00 INR of your 10000.00 INR target for Amount Check."
+    )
+    assert by_title["Amount Check goal reached!"] == (
+        "You've saved 10000.00 INR of your 10000.00 INR target for Amount Check."
+    )
+
+
+async def test_goal_milestone_message_states_threshold_amount_not_current_amount(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    # Landing exactly on 50% still backfills the 25% milestone. Before the
+    # fix, the 25% message wrongly quoted the goal's current amount (50% of
+    # target) instead of the 25% threshold amount.
+    response = await client.post(
+        "/api/v1/goals",
+        headers=auth_headers,
+        json={
+            "name": "Threshold Check",
+            "target_amount_minor": 1000000,
+            "current_amount_minor": 500000,
+            "target_date": "2027-06-01",
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    notifications = await _list_notifications(client, auth_headers)
+    milestones = await _by_category(notifications, "goal_milestone")
+    by_title = {n["title"]: n["message"] for n in milestones}
+    assert set(by_title) == {"Threshold Check is 25% funded", "Threshold Check is 50% funded"}
+
+    assert by_title["Threshold Check is 25% funded"] == (
+        "You've saved 2500.00 INR of your 10000.00 INR target for Threshold Check."
+    )
+    assert by_title["Threshold Check is 50% funded"] == (
+        "You've saved 5000.00 INR of your 10000.00 INR target for Threshold Check."
+    )
+
+
+async def test_goal_milestones_crossed_one_at_a_time_each_get_correct_amount(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    create_response = await client.post(
+        "/api/v1/goals",
+        headers=auth_headers,
+        json={
+            "name": "Step Goal",
+            "target_amount_minor": 1000000,
+            "current_amount_minor": 250000,
+            "target_date": "2027-06-01",
+        },
+    )
+    goal_id = create_response.json()["data"]["id"]
+
+    notifications = await _list_notifications(client, auth_headers)
+    first_pass = await _by_category(notifications, "goal_milestone")
+    assert {n["title"]: n["message"] for n in first_pass} == {
+        "Step Goal is 25% funded": (
+            "You've saved 2500.00 INR of your 10000.00 INR target for Step Goal."
+        )
+    }
+
+    update_response = await client.put(
+        f"/api/v1/goals/{goal_id}",
+        headers=auth_headers,
+        json={"current_amount_minor": 500000},
+    )
+    assert update_response.status_code == 200, update_response.text
+
+    notifications = await _list_notifications(client, auth_headers)
+    second_pass = await _by_category(notifications, "goal_milestone")
+    by_title = {n["title"]: n["message"] for n in second_pass}
+    assert set(by_title) == {"Step Goal is 25% funded", "Step Goal is 50% funded"}
+    # The 25% notification, generated back when current was only 25%, is
+    # untouched by the later update to 50%.
+    assert by_title["Step Goal is 25% funded"] == (
+        "You've saved 2500.00 INR of your 10000.00 INR target for Step Goal."
+    )
+    assert by_title["Step Goal is 50% funded"] == (
+        "You've saved 5000.00 INR of your 10000.00 INR target for Step Goal."
+    )
+
+
+async def test_goal_milestone_repeated_generation_does_not_duplicate_or_change_message(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    await client.post(
+        "/api/v1/goals",
+        headers=auth_headers,
+        json={
+            "name": "Stable Goal",
+            "target_amount_minor": 1000000,
+            "current_amount_minor": 500000,
+            "target_date": "2027-06-01",
+        },
+    )
+
+    first = await _by_category(await _list_notifications(client, auth_headers), "goal_milestone")
+    second = await _by_category(await _list_notifications(client, auth_headers), "goal_milestone")
+    assert len(first) == len(second) == 2
+    assert {n["title"]: n["message"] for n in first} == {n["title"]: n["message"] for n in second}
+
+
+async def test_goal_milestone_amount_uses_integer_minor_units_no_float_artifacts(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    # target not evenly divisible by 4 (or 100): the milestone amount must
+    # still be a clean integer-minor-unit money string, never a raw float
+    # repr like "3333.3333333333335".
+    response = await client.post(
+        "/api/v1/goals",
+        headers=auth_headers,
+        json={
+            "name": "Odd Target",
+            "target_amount_minor": 999999,
+            "current_amount_minor": 999999,
+            "target_date": "2027-06-01",
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    notifications = await _list_notifications(client, auth_headers)
+    milestones = await _by_category(notifications, "goal_milestone")
+    by_title = {n["title"]: n["message"] for n in milestones}
+
+    # 999999 * 25 // 100 = 249999 minor units = 2499.99 INR
+    assert by_title["Odd Target is 25% funded"] == (
+        "You've saved 2499.99 INR of your 9999.99 INR target for Odd Target."
+    )
+    assert by_title["Odd Target goal reached!"] == (
+        "You've saved 9999.99 INR of your 9999.99 INR target for Odd Target."
+    )
+
+
 # --- recurring expense reminders ----------------------------------------------------------
 
 

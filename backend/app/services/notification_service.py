@@ -43,6 +43,7 @@ from app.services.export_formatting import format_money
 from app.services.notification_calculations import (
     is_unusual_expense,
     is_within_reminder_window,
+    milestone_amount_minor,
     milestones_reached,
 )
 
@@ -186,8 +187,9 @@ async def _generate_goal_milestone_notifications(db: AsyncSession, *, user_id: u
                 if milestone == 100
                 else f"{goal.name} is {milestone}% funded"
             )
+            amount_at_milestone = milestone_amount_minor(goal.target_amount_minor, milestone)
             message = (
-                f"You've saved {format_money(goal.current_amount_minor, goal.currency)} of your "
+                f"You've saved {format_money(amount_at_milestone, goal.currency)} of your "
                 f"{format_money(goal.target_amount_minor, goal.currency)} target for {goal.name}."
             )
             await repo.create_if_not_exists(

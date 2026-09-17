@@ -62,6 +62,17 @@ def milestones_reached(progress_percent: float) -> list[int]:
     return [m for m in GOAL_MILESTONES if progress_percent >= m]
 
 
+def milestone_amount_minor(target_minor: int, milestone_percent: int) -> int:
+    """The amount (integer minor units) that `milestone_percent` of
+    `target_minor` represents - e.g. the 25% notification for a
+    ₹1,00,000 target reports ₹25,000, not whatever the goal's current
+    balance happens to be by generation time. Integer floor division only
+    (never a float) per CLAUDE.md's money rules; for the milestones this
+    module defines (25/50/75/100) this is exact whenever target_minor is
+    a multiple of 4, and off by at most a few paise otherwise."""
+    return (target_minor * milestone_percent) // 100
+
+
 def is_unusual_expense(*, amount_minor: int, historical_amounts_minor: list[int]) -> bool:
     """`historical_amounts_minor` is the category's own prior expense
     amounts within UNUSUAL_SPENDING_LOOKBACK_DAYS, NOT including the

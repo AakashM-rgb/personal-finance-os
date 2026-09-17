@@ -201,3 +201,136 @@ async def test_custom_categories_are_isolated_per_user(
     theirs_response = await client.get("/api/v1/categories", headers=other_auth_headers)
     names = {c["name"] for c in theirs_response.json()["data"]}
     assert "Mine Only" not in names
+
+
+async def test_duplicate_category_name_for_same_user_rejected(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    first = await client.post(
+        "/api/v1/categories",
+        headers=auth_headers,
+        json={"name": "Pet Care", "icon": "🐶", "color": "#A3E635"},
+    )
+    assert first.status_code == 201, first.text
+
+    second = await client.post(
+        "/api/v1/categories",
+        headers=auth_headers,
+        json={"name": "Pet Care", "icon": "🐾", "color": "#123456"},
+    )
+    assert second.status_code == 409, second.text
+    error = second.json()["error"]
+    assert error["code"] == "conflict"
+
+
+async def test_same_category_name_allowed_for_different_users(
+    client: AsyncClient, auth_headers: dict, other_auth_headers: dict
+) -> None:
+    mine = await client.post(
+        "/api/v1/categories",
+        headers=auth_headers,
+        json={"name": "Pet Care", "icon": "🐶", "color": "#A3E635"},
+    )
+    assert mine.status_code == 201, mine.text
+
+    theirs = await client.post(
+        "/api/v1/categories",
+        headers=other_auth_headers,
+        json={"name": "Pet Care", "icon": "🐶", "color": "#A3E635"},
+    )
+    assert theirs.status_code == 201, theirs.text
+
+
+async def test_system_categories_unaffected_by_duplicate_name_constraint(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    # System categories (user_id IS NULL) are seeded with distinct names and
+    # remain readable/listable as before - the new per-user uniqueness rule
+    # must not raise on the normal list/read path for them.
+    list_response = await client.get("/api/v1/categories", headers=auth_headers)
+    assert list_response.status_code == 200
+    names = [c["name"] for c in list_response.json()["data"]]
+    assert len(names) == len(set(names))
+
+
+async def test_renaming_category_to_existing_name_rejected(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    await client.post(
+        "/api/v1/categories",
+        headers=auth_headers,
+        json={"name": "Pet Care", "icon": "🐶", "color": "#A3E635"},
+    )
+    other = await client.post(
+        "/api/v1/categories",
+        headers=auth_headers,
+        json={"name": "Pet Supplies", "icon": "🐾", "color": "#123456"},
+    )
+    other_id = other.json()["data"]["id"]
+
+    response = await client.put(
+        f"/api/v1/categories/{other_id}",
+        headers=auth_headers,
+        json={"name": "Pet Care"},
+    )
+    assert response.status_code == 409, response.text
+
+
+async def test_renaming_category_to_own_current_name_is_a_noop(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    create_response = await client.post(
+        "/api/v1/categories",
+        headers=auth_headers,
+        json={"name": "Pet Care", "icon": "🐶", "color": "#A3E635"},
+    )
+    category_id = create_response.json()["data"]["id"]
+
+    response = await client.put(
+        f"/api/v1/categories/{category_id}",
+        headers=auth_headers,
+        json={"name": "Pet Care", "budget_minor": 100000},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["name"] == "Pet Care"
+
+
+async def test_deleted_category_name_can_be_reused(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    create_response = await client.post(
+        "/api/v1/categories",
+        headers=auth_headers,
+        json={"name": "Pet Care", "icon": "🐶", "color": "#A3E635"},
+    )
+    category_id = create_response.json()["data"]["id"]
+
+    delete_response = await client.delete(
+        f"/api/v1/categories/{category_id}", headers=auth_headers
+    )
+    assert delete_response.status_code == 200
+
+    recreate_response = await client.post(
+        "/api/v1/categories",
+        headers=auth_headers,
+        json={"name": "Pet Care", "icon": "🐶", "color": "#A3E635"},
+    )
+    assert recreate_response.status_code == 201, recreate_response.text
+
+
+async def test_concurrent_duplicate_category_creation_cannot_both_succeed(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    import asyncio
+
+    payload = {"name": "Race Category", "icon": "🏁", "color": "#654321"}
+    responses = await asyncio.gather(
+        client.post("/api/v1/categories", headers=auth_headers, json=payload),
+        client.post("/api/v1/categories", headers=auth_headers, json=payload),
+    )
+    status_codes = sorted(r.status_code for r in responses)
+    assert status_codes == [201, 409], [r.text for r in responses]
+
+    list_response = await client.get("/api/v1/categories", headers=auth_headers)
+    matching = [c for c in list_response.json()["data"] if c["name"] == "Race Category"]
+    assert len(matching) == 1

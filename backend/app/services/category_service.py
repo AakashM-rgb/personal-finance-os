@@ -9,9 +9,10 @@ on which module happens to be rendering it."""
 
 import uuid
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import AuthorizationError, NotFoundError, ValidationAppError
+from app.core.errors import AuthorizationError, ConflictError, NotFoundError, ValidationAppError
 from app.models.category import Category
 from app.repositories.category_repository import CategoryRepository
 from app.schemas.category import CategoryCreate, CategoryRead, CategoryUpdate
@@ -84,6 +85,10 @@ async def create_category(
     repo = CategoryRepository(db)
     await _validate_parent_for_create(repo, user_id=user_id, parent_id=data.parent_id)
 
+    duplicate = await repo.get_active_by_name_for_user(data.name, user_id)
+    if duplicate is not None:
+        raise ConflictError("A category with this name already exists.")
+
     category = Category(
         user_id=user_id,
         name=data.name,
@@ -93,7 +98,16 @@ async def create_category(
         parent_id=data.parent_id,
     )
     repo.add(category)
-    await repo.flush()
+    try:
+        await repo.flush()
+    except IntegrityError:
+        # Genuine race: another request created the same-named category
+        # between our pre-check and this insert. The database's own unique
+        # index (see app.models.category) is what actually prevents the
+        # duplicate; this just turns it into the same client-facing 409
+        # rather than a raw 500.
+        await db.rollback()
+        raise ConflictError("A category with this name already exists.") from None
     return _to_read(category)
 
 
@@ -115,7 +129,12 @@ async def update_category(
     if category is None:
         raise NotFoundError("Category not found.")
 
-    if data.name is not None:
+    if data.name is not None and data.name != category.name:
+        duplicate = await repo.get_active_by_name_for_user(
+            data.name, user_id, exclude_id=category_id
+        )
+        if duplicate is not None:
+            raise ConflictError("A category with this name already exists.")
         category.name = data.name
     if data.icon is not None:
         category.icon = data.icon
@@ -144,7 +163,14 @@ async def update_category(
     elif data.clear_parent:
         category.parent_id = None
 
-    await repo.flush()
+    try:
+        await repo.flush()
+    except IntegrityError:
+        # Same race backstop as create_category: another request renamed a
+        # different category to this same name between our pre-check and
+        # this update.
+        await db.rollback()
+        raise ConflictError("A category with this name already exists.") from None
     return _to_read(category)
 
 

@@ -48,6 +48,22 @@ class CategoryRepository:
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_active_by_name_for_user(
+        self, name: str, user_id: uuid.UUID, *, exclude_id: uuid.UUID | None = None
+    ) -> Category | None:
+        """Used to reject a duplicate name before insert/rename - only
+        considers this user's own active categories (archived names are
+        free to reuse; system categories are a separate namespace)."""
+        stmt = select(Category).where(
+            Category.user_id == user_id,
+            Category.name == name,
+            Category.is_active.is_(True),
+        )
+        if exclude_id is not None:
+            stmt = stmt.where(Category.id != exclude_id)
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_ancestor_ids(self, category_id: uuid.UUID) -> set[uuid.UUID]:
         """Walks parent_id up from `category_id`, returning every ancestor's id
         (not including category_id itself). Used to reject cycles before a

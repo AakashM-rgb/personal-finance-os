@@ -8,7 +8,7 @@ editable/deletable by them and invisible to everyone else.
 
 import uuid
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, String
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -18,6 +18,21 @@ from app.models.base import TimestampMixin, UUIDPrimaryKeyMixin
 
 class Category(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "categories"
+    __table_args__ = (
+        # Only constrains a user's own active categories - system rows
+        # (user_id IS NULL) are untouched by this index, and an archived
+        # (is_active=False) category's name frees up for reuse rather than
+        # permanently blocking it. The real backstop against a concurrent
+        # duplicate create is this DB constraint, not the service-layer
+        # pre-check (see app.services.category_service).
+        Index(
+            "uq_categories_user_name_active",
+            "user_id",
+            "name",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL AND is_active = true"),
+        ),
+    )
 
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
