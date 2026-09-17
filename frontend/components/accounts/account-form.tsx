@@ -16,9 +16,7 @@ import {
   type AccountUpdateInput,
 } from "@/lib/accounts";
 import { ApiError } from "@/lib/api-client";
-import { minorUnitsToInputValue, parseMoneyToMinorUnits } from "@/lib/money";
-
-const CURRENCIES = ["INR", "USD", "EUR", "GBP", "JPY"];
+import { CURRENCIES, minorUnitsToInputValue, parseMoneyToMinorUnits } from "@/lib/money";
 
 interface AccountFormProps {
   account?: Account;

@@ -25,6 +25,7 @@ from app.models.session import Session
 from app.models.user import User
 from app.repositories.session_repository import SessionRepository
 from app.repositories.user_repository import UserRepository
+from app.schemas.session import SessionRead
 from app.services.audit_service import log_action
 
 settings = get_settings()
@@ -226,6 +227,12 @@ async def logout(db: AsyncSession, *, raw_refresh_token: str) -> None:
     session = await session_repo.get_by_id(session_id)
     if session is not None and session.revoked_at is None:
         await session_repo.revoke(session)
+
+
+async def list_active_sessions(db: AsyncSession, *, user_id: uuid.UUID) -> list[SessionRead]:
+    sessions = await SessionRepository(db).get_active_by_user(user_id)
+    sessions.sort(key=lambda s: s.created_at, reverse=True)
+    return [SessionRead.model_validate(session) for session in sessions]
 
 
 async def logout_all(db: AsyncSession, *, user_id: uuid.UUID) -> None:

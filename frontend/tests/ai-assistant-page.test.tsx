@@ -26,6 +26,7 @@ function mockAuthed() {
     register: vi.fn(),
     login: vi.fn(),
     logout: vi.fn(),
+    logoutAll: vi.fn(),
   });
 }
 

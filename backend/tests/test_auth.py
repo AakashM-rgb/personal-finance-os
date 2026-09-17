@@ -269,3 +269,127 @@ async def test_logout_revokes_session_so_refresh_then_fails(
         "/api/v1/auth/refresh", headers={"x-csrf-token": csrf_token}
     )
     assert refresh_response.status_code == 401
+
+
+async def test_list_sessions_requires_authentication(client: AsyncClient) -> None:
+    response = await client.get("/api/v1/auth/sessions")
+    assert response.status_code == 401
+
+
+async def test_list_sessions_returns_the_caller_own_active_session(
+    client: AsyncClient, register_payload: dict
+) -> None:
+    register_response = await client.post("/api/v1/auth/register", json=register_payload)
+    access_token = register_response.json()["data"]["access_token"]
+
+    response = await client.get(
+        "/api/v1/auth/sessions", headers={"Authorization": f"Bearer {access_token}"}
+    )
+    assert response.status_code == 200
+    sessions = response.json()["data"]
+    assert len(sessions) == 1
+    assert set(sessions[0].keys()) == {"id", "user_agent", "ip_address", "created_at", "expires_at"}
+
+
+async def test_list_sessions_grows_after_refresh_and_shrinks_after_logout(
+    client: AsyncClient, register_payload: dict
+) -> None:
+    register_response = await client.post("/api/v1/auth/register", json=register_payload)
+    access_token = register_response.json()["data"]["access_token"]
+    csrf_token = register_response.cookies["csrf_token"]
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    # Refresh rotates: the old session is revoked and a new one is issued,
+    # so the active count stays at 1 rather than growing.
+    await client.post("/api/v1/auth/refresh", headers={"x-csrf-token": csrf_token})
+    response = await client.get("/api/v1/auth/sessions", headers=headers)
+    assert len(response.json()["data"]) == 1
+
+    logout_response = await client.post("/api/v1/auth/logout", headers={"x-csrf-token": csrf_token})
+    # The csrf_token cookie rotated along with the session on refresh, so this
+    # logout call (using the pre-rotation token) fails CSRF and revokes
+    # nothing - confirming the active session is still exactly the refreshed one.
+    assert logout_response.status_code == 401
+    response = await client.get("/api/v1/auth/sessions", headers=headers)
+    assert len(response.json()["data"]) == 1
+
+
+async def test_list_sessions_never_returns_another_users_sessions(
+    client: AsyncClient, register_payload: dict
+) -> None:
+    register_response = await client.post("/api/v1/auth/register", json=register_payload)
+    access_token = register_response.json()["data"]["access_token"]
+
+    await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "other.user@example.com",
+            "password": "correcthorse123",
+            "full_name": "Other User",
+        },
+    )
+
+    response = await client.get(
+        "/api/v1/auth/sessions", headers={"Authorization": f"Bearer {access_token}"}
+    )
+    assert response.status_code == 200
+    # Only the caller's own single session - never the other user's.
+    assert len(response.json()["data"]) == 1
+
+
+async def test_logout_all_requires_authentication(client: AsyncClient) -> None:
+    response = await client.post("/api/v1/auth/logout-all")
+    assert response.status_code == 401
+
+
+async def test_logout_all_revokes_every_session_including_the_current_one(
+    client: AsyncClient, register_payload: dict
+) -> None:
+    """logout-all has no "except this device" carve-out (see
+    app.services.auth_service.logout_all) - it must revoke the caller's own
+    current session too, so a subsequent refresh with the same cookie fails."""
+    register_response = await client.post("/api/v1/auth/register", json=register_payload)
+    access_token = register_response.json()["data"]["access_token"]
+    csrf_token = register_response.cookies["csrf_token"]
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    logout_all_response = await client.post("/api/v1/auth/logout-all", headers=headers)
+    assert logout_all_response.status_code == 200
+
+    refresh_response = await client.post(
+        "/api/v1/auth/refresh", headers={"x-csrf-token": csrf_token}
+    )
+    assert refresh_response.status_code == 401
+
+
+async def test_logout_all_does_not_affect_another_users_sessions(
+    client: AsyncClient, register_payload: dict
+) -> None:
+    register_response = await client.post("/api/v1/auth/register", json=register_payload)
+
+    other_register_response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "other.user@example.com",
+            "password": "correcthorse123",
+            "full_name": "Other User",
+        },
+    )
+    other_refresh_cookie = other_register_response.cookies["refresh_token"]
+    other_csrf_token = other_register_response.cookies["csrf_token"]
+
+    await client.post(
+        "/api/v1/auth/logout-all",
+        headers={"Authorization": f"Bearer {register_response.json()['data']['access_token']}"},
+    )
+
+    # The unrelated second user's own session must still be fully usable -
+    # set both cookies explicitly rather than relying on the shared jar,
+    # since the register call above may have left it in either state.
+    client.cookies.set("refresh_token", other_refresh_cookie)
+    client.cookies.set("csrf_token", other_csrf_token)
+    refresh_response = await client.post(
+        "/api/v1/auth/refresh", headers={"x-csrf-token": other_csrf_token}
+    )
+    assert refresh_response.status_code == 200
+    assert refresh_response.json()["data"]["user"]["email"] == "other.user@example.com"

@@ -128,3 +128,12 @@ async def logout_all(
 @router.get("/me", response_model=None)
 async def me(current_user: User = Depends(get_current_user)) -> dict:
     return {"data": UserRead.model_validate(current_user), "error": None, "meta": None}
+
+
+@router.get("/sessions", response_model=None)
+async def list_sessions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    sessions = await auth_service.list_active_sessions(db, user_id=current_user.id)
+    return {"data": sessions, "error": None, "meta": {"count": len(sessions)}}

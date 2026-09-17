@@ -11,6 +11,8 @@ import {
 } from "react";
 
 import { ApiError, apiRequest, readCookie } from "@/lib/api-client";
+import { getSettings } from "@/lib/settings";
+import { applyTheme, isValidThemePreference, storeTheme } from "@/lib/theme";
 
 export interface AuthUser {
   id: string;
@@ -46,6 +48,7 @@ interface AuthContextValue {
   register: (input: RegisterInput) => Promise<void>;
   login: (input: LoginInput) => Promise<void>;
   logout: () => Promise<void>;
+  logoutAll: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -58,6 +61,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const applySession = useCallback((result: AccessTokenResponse) => {
     setUser(result.user);
     setAccessToken(result.access_token);
+
+    // Reconcile the locally-cached theme with the account's real saved
+    // preference the moment we know who's signed in - e.g. logging in on a
+    // new device/browser must show the user's own theme, not just whatever
+    // the beforeInteractive script guessed from an empty localStorage.
+    // Best-effort: a failure here must never block sign-in.
+    void getSettings(result.access_token)
+      .then((settings) => {
+        if (isValidThemePreference(settings.theme)) {
+          storeTheme(settings.theme);
+          applyTheme(settings.theme);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const clearSession = useCallback(() => {
@@ -129,9 +146,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [clearSession]);
 
+  // Revokes every session for this account, including the one making this
+  // request - there is no "except this device" variant on the backend (see
+  // app.services.auth_service.logout_all), so the caller is always signed
+  // out here too.
+  const logoutAll = useCallback(async () => {
+    try {
+      await apiRequest("/api/v1/auth/logout-all", { method: "POST", accessToken });
+    } catch (error) {
+      if (!(error instanceof ApiError)) throw error;
+    } finally {
+      clearSession();
+    }
+  }, [accessToken, clearSession]);
+
   const value = useMemo<AuthContextValue>(
-    () => ({ user, accessToken, isLoading, register, login, logout }),
-    [user, accessToken, isLoading, register, login, logout]
+    () => ({ user, accessToken, isLoading, register, login, logout, logoutAll }),
+    [user, accessToken, isLoading, register, login, logout, logoutAll]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

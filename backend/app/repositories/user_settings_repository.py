@@ -22,3 +22,6 @@ class UserSettingsRepository:
             select(UserSettings).where(UserSettings.user_id == user_id)
         )
         return result.scalar_one_or_none()
+
+    async def flush(self) -> None:
+        await self._db.flush()

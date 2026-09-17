@@ -6,6 +6,11 @@
  * floating-point money math is prone to.
  */
 
+/** Every currency this app supports, wherever a user picks one (accounts,
+ * settings, goals) - kept small and explicit rather than open-ended,
+ * matching the backend's own app.schemas.account.SUPPORTED_CURRENCIES. */
+export const CURRENCIES = ["INR", "USD", "EUR", "GBP", "JPY"] as const;
+
 const DECIMALS_BY_CURRENCY: Record<string, number> = {
   INR: 2,
   USD: 2,

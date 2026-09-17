@@ -17,6 +17,7 @@ from app.api.v1 import (
     search,
     subscriptions,
     transactions,
+    user_settings,
 )
 
 api_router = APIRouter(prefix="/api/v1")
@@ -36,3 +37,4 @@ api_router.include_router(reports.router)
 api_router.include_router(receipts.router)
 api_router.include_router(ai.router)
 api_router.include_router(search.router)
+api_router.include_router(user_settings.router)

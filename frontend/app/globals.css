@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+/* Every `dark:` utility in this app is triggered by a `.dark` class on
+   <html> - set by the theme bootstrap script/lib/theme.ts (System/Light/Dark,
+   see Settings > Preferences) - rather than by `prefers-color-scheme`
+   directly, so a user's explicit choice can actually override their OS
+   setting. "System" mode still tracks the OS: the script computes it via
+   `matchMedia` and applies the same `.dark` class either way, so every
+   existing dark: utility keeps working unchanged in all three modes. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -12,15 +21,27 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* A visitor who has asked their OS/browser for reduced motion never gets
+   more than an instant state change - no animation is ever the only way
+   information is conveyed on this site, so removing it loses nothing. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
