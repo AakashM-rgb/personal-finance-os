@@ -131,6 +131,9 @@ async def create_transaction(
     data: TransactionCreate,
     idempotency_key: str | None,
     recurring_transaction_id: uuid.UUID | None = None,
+    linked_account_id: uuid.UUID | None = None,
+    external_transaction_id: str | None = None,
+    needs_review: bool = False,
 ) -> TransactionRead:
     """`recurring_transaction_id` is never accepted from the request body
     (TransactionCreate has no such field) - it is only ever passed by
@@ -138,7 +141,15 @@ async def create_transaction(
     occurrence, so a caller can never forge a link to another user's
     schedule. Every generated occurrence goes through this exact function,
     so it gets the same validation and account-balance effect as a
-    manually-created transaction - never a second, divergent code path."""
+    manually-created transaction - never a second, divergent code path.
+
+    `linked_account_id`/`external_transaction_id`/`needs_review` are the
+    same kind of caller-only extension: never accepted from the request
+    body, only ever passed by app.services.sync_service when importing an
+    external transaction, so every synced transaction goes through this
+    exact same validation and balance-effect path too - there is no
+    second, divergent way a synced transaction's amount ends up on the
+    ledger."""
     txn_repo = TransactionRepository(db)
 
     if idempotency_key:
@@ -172,6 +183,9 @@ async def create_transaction(
         is_recurring=data.is_recurring or recurring_transaction_id is not None,
         idempotency_key=idempotency_key,
         recurring_transaction_id=recurring_transaction_id,
+        linked_account_id=linked_account_id,
+        external_transaction_id=external_transaction_id,
+        needs_review=needs_review,
     )
     txn_repo.add(transaction)
     try:

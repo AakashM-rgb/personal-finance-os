@@ -103,6 +103,14 @@ class TransactionRead(BaseModel):
     is_recurring: bool
     recurring_transaction_id: UUID | None
 
+    # Automatic-sync provenance/review state - always None/False for a
+    # manual, recurring-generated, or receipt-derived transaction. Never
+    # settable through TransactionCreate/TransactionUpdate; only
+    # app.services.sync_service ever sets them (see
+    # app.services.transaction_service.create_transaction).
+    linked_account_id: UUID | None
+    needs_review: bool
+
     created_at: datetime
     updated_at: datetime
 

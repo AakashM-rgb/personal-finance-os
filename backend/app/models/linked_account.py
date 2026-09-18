@@ -17,14 +17,24 @@ authorization credential; a provider only ever hands back an opaque
 `consent_id` it manages on its own side (see app.sync.provider.base).
 
 This model carries no read/write methods of its own - all sync
-orchestration logic belongs in a later phase's service layer, never here.
+orchestration logic belongs in app.services.sync_service, never here.
+
+`external_account_id` is the provider-defined identifier for this specific
+institution account under the consent (see
+app.sync.provider.base.LinkedInstitutionAccount) - required so a later
+sync can ask the provider for this exact account's transactions without
+re-listing every account under the consent each time. The unique
+constraint on (consent_id, external_account_id) makes completing the same
+consent handle twice (a retried callback, a double form submit) safely
+idempotent at the database level, mirroring how Transaction's own
+idempotency_key constraint backstops create_transaction.
 """
 
 import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,6 +52,11 @@ class SyncConsentStatus(enum.StrEnum):
 
 class LinkedAccount(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "linked_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "consent_id", "external_account_id", name="uq_linked_accounts_consent_external_account"
+        ),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -63,6 +78,9 @@ class LinkedAccount(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # metadata below.
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     external_institution_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Opaque, provider-defined identifier for this specific institution
+    # account under the consent - see the module docstring.
+    external_account_id: Mapped[str] = mapped_column(String(200), nullable=False)
     # The Financial Information Provider reference an Account Aggregator
     # flow would identify the bank by - opaque and provider-defined; never
     # assumed to have a particular shape here.

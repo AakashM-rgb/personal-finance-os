@@ -34,8 +34,18 @@ guarantee for synced transactions is expected to reuse the existing
 account and external transaction id); the partial unique index on these two
 columns is a defense-in-depth backstop, not the primary mechanism, and never
 applies to ordinary (non-synced) transactions since it only covers rows
-where `linked_account_id IS NOT NULL`. No ingestion logic exists yet - these
-columns are additive schema only.
+where `linked_account_id IS NOT NULL`.
+
+`needs_review` is the sync pipeline's confidence signal (see
+app.services.sync_service): a low-confidence synced transaction is still
+created immediately (never held back or guessed at), with `category_id`
+left NULL (the existing Uncategorized convention - see
+app.services.category_service) and this flag set True so a later phase's
+review-queue UI can surface it. It is always False for every manual,
+recurring-generated, and receipt-derived transaction. The partial index
+below exists for that future review-queue query
+(`WHERE user_id = ? AND needs_review = true`); most rows never need review,
+so indexing only the True rows keeps it small.
 """
 
 import enum
@@ -101,6 +111,13 @@ class Transaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             unique=True,
             postgresql_where=text("linked_account_id IS NOT NULL"),
         ),
+        # The future sync review-queue's access path - see the module
+        # docstring. A partial index (most transactions never need review).
+        Index(
+            "ix_transactions_user_needs_review",
+            "user_id",
+            postgresql_where=text("needs_review = true"),
+        ),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -157,3 +174,6 @@ class Transaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
     )
     external_transaction_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    needs_review: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
