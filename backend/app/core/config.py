@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     # means the deterministic mock provider, never a startup failure and
     # never a pretend call to an external bank/AA service.
     sync_provider: str = Field(default="mock", alias="SYNC_PROVIDER")
+    sync_link_rate_limit: str = Field(default="10/minute", alias="SYNC_LINK_RATE_LIMIT")
+    sync_trigger_rate_limit: str = Field(default="20/minute", alias="SYNC_TRIGGER_RATE_LIMIT")
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -17,6 +17,7 @@ from app.api.v1 import (
     reports,
     search,
     subscriptions,
+    sync,
     transactions,
     user_settings,
 )
@@ -40,3 +41,4 @@ api_router.include_router(ai.router)
 api_router.include_router(search.router)
 api_router.include_router(user_settings.router)
 api_router.include_router(notifications.router)
+api_router.include_router(sync.router)

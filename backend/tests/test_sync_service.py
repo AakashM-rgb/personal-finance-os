@@ -4,6 +4,7 @@
 security invariants the pipeline must never violate."""
 
 import inspect
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -629,11 +630,24 @@ _FORBIDDEN_SUBSTRINGS = (
 )
 
 
+_FORBIDDEN_PATTERN = re.compile(
+    "|".join(
+        # Short, common-substring-risk terms ("pin") need letter-boundary
+        # matching so an innocent identifier like
+        # `update_linked_account_mapping` ("map-PIN-g") never false-positives;
+        # the longer, distinctive phrases keep plain substring matching so a
+        # real field like `payment_authorization_token` still matches
+        # "payment_auth" as a prefix.
+        rf"(?<![a-z]){re.escape(term)}(?![a-z])" if len(term) <= 3 else re.escape(term)
+        for term in _FORBIDDEN_SUBSTRINGS
+    )
+)
+
+
 def _assert_no_forbidden_names(names: set[str]) -> None:
     for name in names:
-        lowered = name.lower()
-        for forbidden in _FORBIDDEN_SUBSTRINGS:
-            assert forbidden not in lowered, f"forbidden name found: {name!r}"
+        match = _FORBIDDEN_PATTERN.search(name.lower())
+        assert match is None, f"forbidden name found: {name!r}"
 
 
 def test_sync_service_has_no_forbidden_public_functions() -> None:

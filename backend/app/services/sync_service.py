@@ -66,6 +66,7 @@ from app.schemas.account import AccountCreate
 from app.schemas.sync import LinkedAccountRead, SyncRunRead
 from app.schemas.transaction import TransactionCreate
 from app.services import account_service, transaction_service
+from app.services.audit_service import log_action
 from app.services.keyword_categorization import (
     suggest_category_for_known_merchant,
     suggest_category_name,
@@ -137,18 +138,41 @@ async def _get_owned_linked_account(
 # --- link lifecycle ----------------------------------------------------------
 
 
-async def initiate_link(*, user_id: uuid.UUID) -> LinkInitiation:
-    """No database access - the provider hands back everything the caller
-    needs (a redirect_url and a consent_handle) with nothing persisted on
-    our side yet. The caller passes the exact same consent_handle back to
-    complete_link once the user returns from their bank/Account
-    Aggregator app."""
+async def initiate_link(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    institution_hint: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> LinkInitiation:
+    """No LinkedAccount is persisted here - the provider hands back
+    everything the caller needs (a redirect_url and a consent_handle), and
+    the caller passes that exact same consent_handle back to complete_link
+    once the user returns from their bank/Account Aggregator app. `db` is
+    only used for the audit log entry (see CLAUDE.md §12: audit sensitive
+    actions), never for a linked-account row at this point."""
     provider = get_sync_provider()
-    return await provider.initiate_link(user_id=user_id)
+    initiation = await provider.initiate_link(user_id=user_id, institution_hint=institution_hint)
+    await log_action(
+        db,
+        user_id=user_id,
+        action="linked_account.link_initiated",
+        entity_type="linked_account",
+        ip_address=ip_address,
+        user_agent=user_agent,
+        metadata={"provider": provider.name},
+    )
+    return initiation
 
 
 async def complete_link(
-    db: AsyncSession, *, user_id: uuid.UUID, consent_handle: str
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    consent_handle: str,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
 ) -> list[LinkedAccountRead]:
     """Finishes a consent flow and persists one LinkedAccount row per
     institution account the provider reports, each auto-provisioned with
@@ -216,6 +240,16 @@ async def complete_link(
             if existing is None:
                 raise
             linked_account = existing
+        await log_action(
+            db,
+            user_id=user_id,
+            action="linked_account.link_completed",
+            entity_type="linked_account",
+            entity_id=str(linked_account.id),
+            ip_address=ip_address,
+            user_agent=user_agent,
+            metadata={"provider": provider.name},
+        )
         results.append(_linked_account_to_read(linked_account))
 
     return results
@@ -236,7 +270,12 @@ async def get_linked_account(
 
 
 async def revoke_link(
-    db: AsyncSession, *, user_id: uuid.UUID, linked_account_id: uuid.UUID
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    linked_account_id: uuid.UUID,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
 ) -> LinkedAccountRead:
     """Revokes the provider-side consent and marks the link revoked -
     never deletes the row (its sync history/provenance must survive, same
@@ -249,6 +288,38 @@ async def revoke_link(
     provider = get_sync_provider()
     await provider.revoke_consent(consent_id=linked_account.consent_id)
     linked_account.consent_status = SyncConsentStatus.REVOKED
+    await LinkedAccountRepository(db).flush()
+    await log_action(
+        db,
+        user_id=user_id,
+        action="linked_account.revoked",
+        entity_type="linked_account",
+        entity_id=str(linked_account.id),
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    return _linked_account_to_read(linked_account)
+
+
+async def update_linked_account_mapping(
+    db: AsyncSession, *, user_id: uuid.UUID, linked_account_id: uuid.UUID, account_id: uuid.UUID
+) -> LinkedAccountRead:
+    """The only linked-account "management" mutation the service supports
+    today: redirecting which of the user's own internal ledger accounts
+    future syncs post into (e.g. after merging two accounts by hand). Reuses
+    account_service.resolve_active_account - the exact same ownership+
+    archived check transaction_service already depends on - so this can
+    never point a linked account at another user's account or an archived
+    one. Everything else about a LinkedAccount (consent_id, provider
+    identifiers, sync statistics, ownership, consent_status) is never
+    client-settable - see app.schemas.sync.LinkedAccountUpdate."""
+    linked_account = await _get_owned_linked_account(
+        db, user_id=user_id, linked_account_id=linked_account_id
+    )
+    await account_service.resolve_active_account(
+        db, user_id=user_id, account_id=account_id, field="account_id"
+    )
+    linked_account.account_id = account_id
     await LinkedAccountRepository(db).flush()
     return _linked_account_to_read(linked_account)
 
@@ -443,7 +514,12 @@ def _decide_run_status(
 
 
 async def trigger_sync(
-    db: AsyncSession, *, user_id: uuid.UUID, linked_account_id: uuid.UUID
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    linked_account_id: uuid.UUID,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
 ) -> SyncRunRead:
     """The sync pipeline entry point - see the module docstring for the
     full pipeline. A provider failure, or a per-transaction validation
@@ -513,6 +589,16 @@ async def trigger_sync(
                 "sync_run_id": str(sync_run.id),
             },
         )
+        await log_action(
+            db,
+            user_id=user_id,
+            action="linked_account.sync_triggered",
+            entity_type="linked_account",
+            entity_id=str(linked_account.id),
+            ip_address=ip_address,
+            user_agent=user_agent,
+            metadata={"sync_run_id": str(sync_run.id), "status": sync_run.status.value},
+        )
         return SyncRunRead.model_validate(sync_run)
 
     sync_run.transactions_fetched = len(external_transactions)
@@ -569,4 +655,27 @@ async def trigger_sync(
             "transactions_failed": failed_count,
         },
     )
+    await log_action(
+        db,
+        user_id=user_id,
+        action="linked_account.sync_triggered",
+        entity_type="linked_account",
+        entity_id=str(linked_account.id),
+        ip_address=ip_address,
+        user_agent=user_agent,
+        metadata={
+            "sync_run_id": str(sync_run.id),
+            "status": sync_run.status.value,
+            "transactions_created": created_count,
+            "transactions_skipped_duplicate": skipped_count,
+        },
+    )
     return SyncRunRead.model_validate(sync_run)
+
+
+async def list_sync_runs(
+    db: AsyncSession, *, user_id: uuid.UUID, linked_account_id: uuid.UUID
+) -> list[SyncRunRead]:
+    await _get_owned_linked_account(db, user_id=user_id, linked_account_id=linked_account_id)
+    sync_runs = await SyncRunRepository(db).list_for_linked_account(linked_account_id)
+    return [SyncRunRead.model_validate(sync_run) for sync_run in sync_runs]
