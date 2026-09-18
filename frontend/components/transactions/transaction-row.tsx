@@ -78,6 +78,16 @@ export function TransactionRow({
                 Recurring
               </span>
             )}
+            {transaction.linked_account_id && (
+              <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                🔄 Auto-synced
+              </span>
+            )}
+            {transaction.needs_review && (
+              <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                Needs review
+              </span>
+            )}
           </p>
           <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
             {date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}

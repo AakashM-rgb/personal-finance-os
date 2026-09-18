@@ -87,6 +87,15 @@ export default function SettingsPage() {
           </p>
         </Card>
       </Link>
+
+      <Link href="/settings/connected-accounts">
+        <Card className="transition-colors hover:border-zinc-300 dark:hover:border-zinc-700">
+          <p className="font-medium text-zinc-900 dark:text-zinc-50">Connected Accounts</p>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            Automatically import transactions from linked financial accounts (read-only).
+          </p>
+        </Card>
+      </Link>
     </div>
   );
 }

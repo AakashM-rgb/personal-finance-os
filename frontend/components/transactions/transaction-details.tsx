@@ -112,6 +112,14 @@ export function TransactionDetails({
 
         <Field label="Recurring">{transaction.is_recurring ? "Yes" : "No"}</Field>
 
+        <Field label="Source">
+          {transaction.linked_account_id ? "🔄 Automatically synced" : "Manual"}
+        </Field>
+
+        {transaction.needs_review && (
+          <Field label="Review">Needs review - category not auto-assigned</Field>
+        )}
+
         {transaction.notes && (
           <div className="col-span-2 flex flex-col gap-0.5">
             <span className="text-xs text-zinc-500 dark:text-zinc-400">Notes</span>
