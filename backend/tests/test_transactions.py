@@ -893,3 +893,153 @@ async def test_quick_add_parse_reports_ambiguous_categories_for_confirmation(
     assert data["category_name"] is None
     assert data["confidence"] == "low"
     assert data["error"] is not None
+
+
+# --- remember_category_for_merchant (Phase E opt-in rule learning) -----------------
+
+
+async def test_remember_category_for_merchant_creates_a_rule(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    account = await _create_account(client, auth_headers, balance_minor=10000)
+    shopping_id = await _get_category_id(client, auth_headers, "Shopping")
+    education_id = await _get_category_id(client, auth_headers, "Education")
+    transaction = await _create_transaction(
+        client,
+        auth_headers,
+        account_id=account["id"],
+        type="expense",
+        amount_minor=1500,
+        merchant="ABC EDUCATION",
+        category_id=shopping_id,
+    )
+
+    response = await client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=auth_headers,
+        json={"category_id": education_id, "remember_category_for_merchant": True},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["category_id"] == education_id
+
+    rules = await client.get("/api/v1/merchant-rules", headers=auth_headers)
+    matching = [r for r in rules.json()["data"] if r["merchant_key"] == "Abc Education"]
+    assert len(matching) == 1
+    assert matching[0]["category_id"] == education_id
+
+
+async def test_editing_a_transaction_without_the_flag_never_creates_a_rule(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    account = await _create_account(client, auth_headers, balance_minor=10000)
+    shopping_id = await _get_category_id(client, auth_headers, "Shopping")
+    education_id = await _get_category_id(client, auth_headers, "Education")
+    transaction = await _create_transaction(
+        client,
+        auth_headers,
+        account_id=account["id"],
+        type="expense",
+        amount_minor=1500,
+        merchant="XYZ Studio",
+        category_id=shopping_id,
+    )
+
+    response = await client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=auth_headers,
+        json={"category_id": education_id},
+    )
+    assert response.status_code == 200, response.text
+
+    rules = await client.get("/api/v1/merchant-rules", headers=auth_headers)
+    assert rules.json()["data"] == []
+
+
+async def test_remember_category_for_merchant_updates_an_existing_rule(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    account = await _create_account(client, auth_headers, balance_minor=10000)
+    shopping_id = await _get_category_id(client, auth_headers, "Shopping")
+
+    first = await _create_transaction(
+        client,
+        auth_headers,
+        account_id=account["id"],
+        type="expense",
+        amount_minor=1500,
+        merchant="Swiggy",
+        category_id=shopping_id,
+    )
+    await client.put(
+        f"/api/v1/transactions/{first['id']}",
+        headers=auth_headers,
+        json={"category_id": shopping_id, "remember_category_for_merchant": True},
+    )
+
+    food_id = await _get_category_id(client, auth_headers, "Food")
+    second = await _create_transaction(
+        client,
+        auth_headers,
+        account_id=account["id"],
+        type="expense",
+        amount_minor=2500,
+        merchant="Swiggy",
+        category_id=shopping_id,
+    )
+    response = await client.put(
+        f"/api/v1/transactions/{second['id']}",
+        headers=auth_headers,
+        json={"category_id": food_id, "remember_category_for_merchant": True},
+    )
+    assert response.status_code == 200, response.text
+
+    rules = await client.get("/api/v1/merchant-rules", headers=auth_headers)
+    matching = [r for r in rules.json()["data"] if r["merchant_key"] == "Swiggy"]
+    assert len(matching) == 1  # updated in place, never duplicated
+    assert matching[0]["category_id"] == food_id
+
+
+async def test_remember_category_for_merchant_requires_a_category(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    account = await _create_account(client, auth_headers, balance_minor=10000)
+    shopping_id = await _get_category_id(client, auth_headers, "Shopping")
+    transaction = await _create_transaction(
+        client,
+        auth_headers,
+        account_id=account["id"],
+        type="expense",
+        amount_minor=1500,
+        merchant="Swiggy",
+        category_id=shopping_id,
+    )
+
+    response = await client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=auth_headers,
+        json={"clear_category": True, "remember_category_for_merchant": True},
+    )
+    assert response.status_code == 422
+
+
+async def test_remember_category_for_merchant_requires_a_merchant(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    account = await _create_account(client, auth_headers, balance_minor=10000)
+    shopping_id = await _get_category_id(client, auth_headers, "Shopping")
+    transaction = await _create_transaction(
+        client,
+        auth_headers,
+        account_id=account["id"],
+        type="expense",
+        amount_minor=1500,
+        category_id=shopping_id,
+    )
+
+    education_id = await _get_category_id(client, auth_headers, "Education")
+    response = await client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=auth_headers,
+        json={"category_id": education_id, "remember_category_for_merchant": True},
+    )
+    assert response.status_code == 422

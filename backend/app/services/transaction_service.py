@@ -3,6 +3,13 @@ account-balance ledger updates every create/update/delete/duplicate must
 apply atomically and in the same spirit as the rest of the app - reads
 never trust a caller-supplied user_id, only the authenticated one passed in
 by the route layer.
+
+`update_transaction`'s `remember_category_for_merchant` flag
+(TransactionUpdate) is the opt-in path a user's manual category correction
+becomes a persistent app.services.merchant_rule_service rule, applied by
+app.services.sync_service to every future synced transaction from the same
+merchant. It is never automatic - a plain category edit never creates or
+touches a rule.
 """
 
 import uuid
@@ -24,6 +31,7 @@ from app.schemas.transaction import (
     TransactionUpdate,
 )
 from app.services import account_service
+from app.services.merchant_rule_service import upsert_rule
 from app.services.quick_add_parser import parse_quick_add_text
 
 
@@ -313,6 +321,25 @@ async def update_transaction(
         transaction.is_recurring = data.is_recurring
 
     await txn_repo.flush()
+
+    if data.remember_category_for_merchant:
+        if new_category_id is None:
+            raise ValidationAppError(
+                "Choose a category before asking to remember it for this merchant.",
+                field_errors={"remember_category_for_merchant": "no category"},
+            )
+        if not transaction.merchant:
+            raise ValidationAppError(
+                "This transaction has no merchant to remember a category for.",
+                field_errors={"remember_category_for_merchant": "no merchant"},
+            )
+        await upsert_rule(
+            db,
+            user_id=user_id,
+            raw_merchant=transaction.merchant,
+            category_id=new_category_id,
+        )
+
     return _to_read(transaction)
 
 

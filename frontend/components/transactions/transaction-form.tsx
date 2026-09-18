@@ -71,12 +71,17 @@ export function TransactionForm({
   const [tagsInput, setTagsInput] = useState((transaction?.tags ?? []).join(", "));
   const [occurredAt, setOccurredAt] = useState(toDatetimeLocal(transaction?.occurred_at));
   const [isRecurring, setIsRecurring] = useState(transaction?.is_recurring ?? false);
+  // Opt-in only, per edit - never pre-checked, so a plain save never
+  // silently creates or changes a merchant rule (see
+  // app.services.merchant_rule_service / TransactionUpdate.remember_category_for_merchant).
+  const [rememberCategory, setRememberCategory] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const isTransfer = type === "transfer";
+  const canRememberCategory = isEditing && !isTransfer && merchant.trim() !== "" && categoryId !== "";
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -112,7 +117,11 @@ export function TransactionForm({
     setIsSubmitting(true);
     try {
       if (isEditing) {
-        await onSubmit({ ...payload, clear_category: isTransfer || !categoryId });
+        await onSubmit({
+          ...payload,
+          clear_category: isTransfer || !categoryId,
+          remember_category_for_merchant: canRememberCategory && rememberCategory,
+        });
       } else {
         await onSubmit(payload);
       }
@@ -271,6 +280,17 @@ export function TransactionForm({
             onChange={(e) => setIsRecurring(e.target.checked)}
           />
           This is a recurring bill or income
+        </label>
+      )}
+
+      {canRememberCategory && (
+        <label className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+          <input
+            type="checkbox"
+            checked={rememberCategory}
+            onChange={(e) => setRememberCategory(e.target.checked)}
+          />
+          Remember this category for &quot;{merchant.trim()}&quot;
         </label>
       )}
 

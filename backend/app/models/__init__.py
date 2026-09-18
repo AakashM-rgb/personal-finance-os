@@ -7,6 +7,7 @@ from app.models.budget import Budget, BudgetItem
 from app.models.category import Category
 from app.models.credit_card_details import CreditCardDetails
 from app.models.linked_account import LinkedAccount, SyncConsentStatus
+from app.models.merchant_category_rule import MerchantCategoryRule
 from app.models.notification import Notification, NotificationCategory
 from app.models.receipt import Receipt, ReceiptStatus
 from app.models.recurring_transaction import RecurrenceFrequency, RecurringTransaction
@@ -27,6 +28,7 @@ __all__ = [
     "Category",
     "CreditCardDetails",
     "LinkedAccount",
+    "MerchantCategoryRule",
     "Notification",
     "NotificationCategory",
     "Receipt",

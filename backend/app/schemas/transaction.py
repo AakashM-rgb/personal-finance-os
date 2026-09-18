@@ -76,6 +76,11 @@ class TransactionUpdate(BaseModel):
     occurred_at: datetime | None = None
     is_recurring: bool | None = None
 
+    # Opt-in only - see app.services.transaction_service.update_transaction.
+    # Never creates a rule silently; the user must explicitly ask to
+    # remember a merchant's category on this specific edit.
+    remember_category_for_merchant: bool = False
+
     @field_validator("tags")
     @classmethod
     def validate_tags(cls, value: list[str] | None) -> list[str] | None:

@@ -21,7 +21,7 @@ from app.models.sync_run import SyncRun, SyncRunStatus
 from app.repositories.transaction_repository import TransactionRepository
 from app.schemas.sync import LinkedAccountRead
 from app.schemas.transaction import TransactionCreate
-from app.services import sync_service, transaction_service
+from app.services import merchant_rule_service, sync_service, transaction_service
 from app.sync.provider.base import (
     ExternalTransaction,
     LinkCompletion,
@@ -107,6 +107,14 @@ def _ext_txn(**overrides: object) -> ExternalTransaction:
 async def _get_user_id(client: AsyncClient, headers: dict) -> uuid.UUID:
     response = await client.get("/api/v1/auth/me", headers=headers)
     return uuid.UUID(response.json()["data"]["id"])
+
+
+async def _get_category_id(client: AsyncClient, headers: dict, name: str) -> uuid.UUID:
+    response = await client.get("/api/v1/categories", headers=headers)
+    for category in response.json()["data"]:
+        if category["name"] == name:
+            return uuid.UUID(category["id"])
+    raise AssertionError(f"category {name!r} not found in list")
 
 
 async def _link(db_session: AsyncSession, *, user_id: uuid.UUID) -> LinkedAccountRead:
@@ -728,3 +736,213 @@ async def test_sync_never_classifies_two_transactions_as_a_transfer(
     assert len(synced) == 2
     assert all(t["type"] != "transfer" for t in synced)
     assert all(t["transfer_account_id"] is None for t in synced)
+
+
+# --- Phase E: user merchant rule categorization ------------------------------
+
+
+async def test_user_rule_overrides_known_merchant_mapping(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Swiggy normally resolves to Food via the curated merchant map (see
+    app.services.keyword_categorization) - a user rule for the exact same
+    merchant must win instead."""
+    user_id = await _get_user_id(client, auth_headers)
+    shopping_id = await _get_category_id(client, auth_headers, "Shopping")
+    await merchant_rule_service.upsert_rule(
+        db_session, user_id=user_id, raw_merchant="Swiggy", category_id=shopping_id
+    )
+    await db_session.commit()
+
+    fake = _FakeSyncProvider(transactions=[_ext_txn(narration="UPI/DR/399/SWIGGY/paytm@ybl/Order")])
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] == str(shopping_id)  # not Food - the user rule wins
+    assert synced["needs_review"] is False
+
+
+async def test_user_rule_overrides_keyword_categorization(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "CORNER RESTAURANT" matches the generic "Food" keyword (a weak,
+    low-confidence signal on its own - see
+    test_trigger_sync_weak_keyword_match_is_low_confidence_needs_review). A
+    user rule for the same normalized merchant must override it."""
+    user_id = await _get_user_id(client, auth_headers)
+    health_id = await _get_category_id(client, auth_headers, "Health")
+    # The narration's fallback-normalized merchant is "Corner Restaurant
+    # Payment" - the rule must target that exact canonical key to match.
+    await merchant_rule_service.upsert_rule(
+        db_session,
+        user_id=user_id,
+        raw_merchant="NEFT/DR/N999999999999/CORNER RESTAURANT PAYMENT",
+        category_id=health_id,
+    )
+    await db_session.commit()
+
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                external_transaction_id="ext-weak",
+                narration="NEFT/DR/N999999999999/CORNER RESTAURANT PAYMENT",
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] == str(health_id)  # not Food (keyword) - the user rule wins
+    assert synced["needs_review"] is False
+
+
+async def test_user_rule_is_high_confidence_even_for_an_unrecognized_merchant(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact scenario from the phase spec: "ABC EDUCATION" is not in
+    the curated alias list (normalize_merchant's own `recognized` flag is
+    False for it), so a plain merchant-map/keyword match would never be
+    high confidence - but a user rule must still auto-post, never sit in
+    needs_review waiting for a signal the built-in list will never give it."""
+    user_id = await _get_user_id(client, auth_headers)
+    education_id = await _get_category_id(client, auth_headers, "Education")
+    await merchant_rule_service.upsert_rule(
+        db_session,
+        user_id=user_id,
+        raw_merchant="ABC EDUCATION",
+        category_id=education_id,
+    )
+    await db_session.commit()
+
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                external_transaction_id="ext-abc-edu",
+                narration="UPI/DR/500/ABC EDUCATION PVT LTD/edu@icici/Fee Payment",
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    run = await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert run.status.value == "success"
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] == str(education_id)
+    assert synced["needs_review"] is False
+    assert synced["merchant"] == "Abc Education"
+
+
+async def test_unknown_merchant_without_a_rule_still_needs_review(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: existing needs_review behavior for a merchant with no
+    user rule, no merchant-map hit, and no keyword hit must be unchanged."""
+    user_id = await _get_user_id(client, auth_headers)
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                external_transaction_id="ext-unknown-2",
+                narration="UPI/DR/700/TOTALLY UNKNOWN VENDOR/xyz@upi/Purchase",
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] is None
+    assert synced["needs_review"] is True
+
+
+async def test_different_users_have_independent_rules_for_the_same_merchant_in_sync(
+    client: AsyncClient,
+    auth_headers: dict,
+    other_auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _get_user_id(client, auth_headers)
+    other_user_id = await _get_user_id(client, other_auth_headers)
+    education_id = await _get_category_id(client, auth_headers, "Education")
+    other_health_id = await _get_category_id(client, other_auth_headers, "Health")
+
+    await merchant_rule_service.upsert_rule(
+        db_session, user_id=user_id, raw_merchant="ABC EDUCATION", category_id=education_id
+    )
+    await merchant_rule_service.upsert_rule(
+        db_session, user_id=other_user_id, raw_merchant="ABC EDUCATION", category_id=other_health_id
+    )
+    await db_session.commit()
+
+    fake = _FakeSyncProvider(
+        transactions=[_ext_txn(narration="UPI/DR/500/ABC EDUCATION/edu@icici/Fee")]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+
+    my_linked = await _link(db_session, user_id=user_id)
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=my_linked.id)
+    await db_session.commit()
+
+    # Sharing the same fake external_account_id across both users' links is
+    # fine - each LinkedAccount row is still distinguished by its own
+    # consent_id (derived from the per-user consent_handle), and every
+    # query here is scoped by user_id regardless.
+    their_linked = await _link(db_session, user_id=other_user_id)
+    await sync_service.trigger_sync(
+        db_session, user_id=other_user_id, linked_account_id=their_linked.id
+    )
+    await db_session.commit()
+
+    my_transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    my_synced = next(
+        t for t in my_transactions.json()["data"] if t["linked_account_id"] == str(my_linked.id)
+    )
+    assert my_synced["category_id"] == str(education_id)
+
+    their_transactions = await client.get(
+        "/api/v1/transactions?limit=50", headers=other_auth_headers
+    )
+    their_synced = next(
+        t
+        for t in their_transactions.json()["data"]
+        if t["linked_account_id"] == str(their_linked.id)
+    )
+    assert their_synced["category_id"] == str(other_health_id)

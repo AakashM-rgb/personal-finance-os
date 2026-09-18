@@ -45,7 +45,14 @@ export interface TransactionInput {
   is_recurring?: boolean;
 }
 
-export type TransactionUpdateInput = Partial<TransactionInput> & { clear_category?: boolean };
+export type TransactionUpdateInput = Partial<TransactionInput> & {
+  clear_category?: boolean;
+  /** Opt-in only - persists the transaction's (merchant, category) pair as
+   * a reusable rule (see lib/merchant-rules.ts) applied to future synced
+   * transactions from the same merchant. Never set unless the user
+   * explicitly asked to remember it on this specific edit. */
+  remember_category_for_merchant?: boolean;
+};
 
 export interface TransactionFilters {
   q?: string;

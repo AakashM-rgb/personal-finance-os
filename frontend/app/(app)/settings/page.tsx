@@ -96,6 +96,15 @@ export default function SettingsPage() {
           </p>
         </Card>
       </Link>
+
+      <Link href="/settings/merchant-rules">
+        <Card className="transition-colors hover:border-zinc-300 dark:hover:border-zinc-700">
+          <p className="font-medium text-zinc-900 dark:text-zinc-50">Merchant Rules</p>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            Categories you&apos;ve taught the app to remember for specific merchants.
+          </p>
+        </Card>
+      </Link>
     </div>
   );
 }

@@ -9,7 +9,8 @@ LinkedAccount/SyncRun row is created or mutated.
         -> deduplicate (idempotency_key pre-check; the database's own
            unique constraint on Transaction.idempotency_key is the final
            race-safety backstop, exactly like offline/PWA sync)
-        -> categorize (app.services.keyword_categorization)
+        -> categorize (app.services.merchant_rule_service, then
+           app.services.keyword_categorization)
         -> decide confidence
         -> transaction_service.create_transaction (the SAME path a
            manually-created transaction takes - there is no second,
@@ -25,10 +26,12 @@ convention, see app.services.category_service) and needs_review=True (see
 app.models.transaction) so a later phase's review-queue UI can surface it.
 A user's correction to a synced transaction goes through the existing
 transaction_service.update_transaction like any other edit - nothing here
-invents a second way to change one. Because every correction ends up as an
-ordinary (merchant, category_id) pair on a real Transaction row, a later
-phase can mine that history into reusable per-merchant rules without this
-module changing at all.
+invents a second way to change one. When the user explicitly opts in
+(TransactionUpdate.remember_category_for_merchant), that correction is
+persisted as a MerchantCategoryRule (see app.services.merchant_rule_service)
+and this module's own tier-1 categorization lookup (_resolve_user_rule_category)
+applies it to every future synced transaction from the same merchant -
+still fully deterministic, never an AI guess.
 
 This module never identifies two transactions as a transfer - that stays
 an explicit user action via the existing transaction-editing flow
@@ -72,6 +75,7 @@ from app.services.keyword_categorization import (
     suggest_category_name,
 )
 from app.services.merchant_normalization import NormalizedMerchant, normalize_merchant
+from app.services.merchant_rule_service import resolve_category_for_merchant
 from app.sync.provider.base import ExternalTransaction, LinkedInstitutionAccount, LinkInitiation
 from app.sync.provider.factory import get_sync_provider
 
@@ -331,13 +335,15 @@ async def _resolve_user_rule_category(
     db: AsyncSession, *, user_id: uuid.UUID, canonical_merchant: str
 ) -> uuid.UUID | None:
     """Tier 1 - the highest-confidence categorization source, and always
-    checked first. No user-defined categorization-rule store exists yet
-    (see the module docstring: a later phase's concern, once real
-    corrections have accumulated to mine); this always returns None today
-    and never guesses in place of a real rule. Kept as its own function so
-    a future rule lookup slots in here without touching the priority order
-    around it."""
-    return None
+    checked first. Backed by app.services.merchant_rule_service - the
+    user's own persistent "always categorize this merchant as..." memory,
+    built from explicit corrections (see
+    transaction_service.update_transaction's remember_category_for_merchant
+    flag) or direct management (app.api.v1.merchant_rules). Never a guess:
+    a miss here just falls through to the next tier."""
+    return await resolve_category_for_merchant(
+        db, user_id=user_id, canonical_merchant=canonical_merchant
+    )
 
 
 async def _categorize(
@@ -348,10 +354,11 @@ async def _categorize(
     category_names: list[str],
     category_id_by_name: dict[str, uuid.UUID],
 ) -> tuple[uuid.UUID | None, CategorizationTier]:
-    """The categorization priority order: a user-defined rule (not
-    implemented yet - see _resolve_user_rule_category), then a known-
-    merchant mapping, then a generic keyword match, then Uncategorized. An
-    AI-classifier tier is deliberately not implemented: app.ai.provider is
+    """The categorization priority order: a user-defined rule (see
+    _resolve_user_rule_category / app.services.merchant_rule_service), then
+    a known-merchant mapping, then a generic keyword match, then
+    Uncategorized. An AI-classifier tier is deliberately not implemented:
+    app.ai.provider is
     a conversational tool-calling abstraction, not a one-shot deterministic
     classifier, and reusing it here would mean a non-deterministic,
     unnecessary external call for a decision this module can already make
@@ -381,15 +388,22 @@ async def _categorize(
 def _decide_confidence(
     normalized: NormalizedMerchant, tier: CategorizationTier
 ) -> Literal["high", "low"]:
-    """High confidence requires BOTH a confidently recognized merchant
-    identity AND a category resolved from a strong source (a user rule or
-    the known-merchant map) - never from the generic keyword match alone,
-    which only ever looked at free text, not a confirmed merchant identity.
-    Every other case (unknown merchant, keyword-only match, no match at
-    all) is low confidence: category_id is left NULL and needs_review is
-    set, never guessed."""
-    tier_is_strong = tier in (CategorizationTier.USER_RULE, CategorizationTier.MERCHANT_MAP)
-    if normalized.recognized and tier_is_strong:
+    """A USER_RULE match is always high confidence: the user personally
+    taught the app this exact merchant's category, which outranks
+    normalize_merchant's own `recognized` flag entirely - a user rule for
+    a merchant the curated alias list has never heard of (e.g. "ABC
+    EDUCATION") must still auto-post, not sit in review waiting for a
+    signal it will never get from the built-in list. A MERCHANT_MAP match
+    additionally requires a confidently recognized merchant identity - it
+    is curated, generic data, a weaker signal than something the user
+    explicitly taught. The generic keyword match alone (only ever looked
+    at free text, never a confirmed merchant identity) is never high
+    confidence. Every other case (unknown merchant, keyword-only match, no
+    match at all) is low confidence: category_id is left NULL and
+    needs_review is set, never guessed."""
+    if tier is CategorizationTier.USER_RULE:
+        return "high"
+    if tier is CategorizationTier.MERCHANT_MAP and normalized.recognized:
         return "high"
     return "low"
 

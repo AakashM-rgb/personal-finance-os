@@ -11,6 +11,7 @@ from app.api.v1 import (
     dashboard,
     goals,
     health,
+    merchant_rules,
     notifications,
     receipts,
     recurring_transactions,
@@ -42,3 +43,4 @@ api_router.include_router(search.router)
 api_router.include_router(user_settings.router)
 api_router.include_router(notifications.router)
 api_router.include_router(sync.router)
+api_router.include_router(merchant_rules.router)
