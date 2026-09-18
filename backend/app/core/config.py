@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # Natural-Language Financial Search.
     search_rate_limit: str = Field(default="30/minute", alias="SEARCH_RATE_LIMIT")
 
+    # Automatic transaction sync: no real Account Aggregator vendor is wired
+    # up yet - only the seam (see app.sync.provider.factory). Absent config
+    # means the deterministic mock provider, never a startup failure and
+    # never a pretend call to an external bank/AA service.
+    sync_provider: str = Field(default="mock", alias="SYNC_PROVIDER")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

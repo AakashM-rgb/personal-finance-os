@@ -6,12 +6,14 @@ from app.models.audit_log import AuditLog
 from app.models.budget import Budget, BudgetItem
 from app.models.category import Category
 from app.models.credit_card_details import CreditCardDetails
+from app.models.linked_account import LinkedAccount, SyncConsentStatus
 from app.models.notification import Notification, NotificationCategory
 from app.models.receipt import Receipt, ReceiptStatus
 from app.models.recurring_transaction import RecurrenceFrequency, RecurringTransaction
 from app.models.savings_goal import SavingsGoal
 from app.models.session import Session
 from app.models.subscription import Subscription
+from app.models.sync_run import SyncRun, SyncRunStatus
 from app.models.transaction import Transaction, TransactionType
 from app.models.user import User
 from app.models.user_settings import UserSettings
@@ -24,6 +26,7 @@ __all__ = [
     "BudgetItem",
     "Category",
     "CreditCardDetails",
+    "LinkedAccount",
     "Notification",
     "NotificationCategory",
     "Receipt",
@@ -33,6 +36,9 @@ __all__ = [
     "SavingsGoal",
     "Session",
     "Subscription",
+    "SyncConsentStatus",
+    "SyncRun",
+    "SyncRunStatus",
     "Transaction",
     "TransactionType",
     "User",
