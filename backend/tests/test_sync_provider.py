@@ -284,6 +284,74 @@ def test_setu_sandbox_settings_have_no_forbidden_credential_fields() -> None:
     _assert_no_forbidden_names(setu_fields)
 
 
+async def test_setu_sandbox_provider_failures_never_expose_consent_or_account_identifiers() -> None:
+    """Phase F9: strengthens test_setu_sandbox_provider_failure_never_exposes_the_configured_secret
+    (which only checked the client_secret) - every argument passed into
+    every operation (consent handles, account ids, user ids) must also
+    never appear in what gets raised, since SetuSandboxNotImplementedError
+    only ever interpolates a hardcoded operation name, never any caller
+    argument."""
+    provider = SetuSandboxSyncProvider(
+        base_url="https://sandbox.example.invalid",
+        client_id="distinctive-client-id-value",
+        client_secret="distinctive-client-secret-value",
+    )
+    distinctive_consent_handle = "distinctive-consent-handle-value"
+    distinctive_consent_id = "distinctive-consent-id-value"
+    distinctive_account_id = "distinctive-external-account-id-value"
+
+    with pytest.raises(SetuSandboxNotImplementedError) as initiate_exc:
+        await provider.initiate_link(user_id=_USER_ID, institution_hint="Distinctive Bank Name")
+    with pytest.raises(SetuSandboxNotImplementedError) as complete_exc:
+        await provider.complete_link(consent_handle=distinctive_consent_handle)
+    with pytest.raises(SetuSandboxNotImplementedError) as list_accounts_exc:
+        await provider.list_linked_institution_accounts(consent_id=distinctive_consent_id)
+    with pytest.raises(SetuSandboxNotImplementedError) as list_txns_exc:
+        await provider.list_transactions(
+            consent_id=distinctive_consent_id,
+            external_account_id=distinctive_account_id,
+            since=date(2026, 1, 1),
+            until=date(2026, 1, 31),
+        )
+    with pytest.raises(SetuSandboxNotImplementedError) as revoke_exc:
+        await provider.revoke_consent(consent_id=distinctive_consent_id)
+
+    for exc_info in (
+        initiate_exc,
+        complete_exc,
+        list_accounts_exc,
+        list_txns_exc,
+        revoke_exc,
+    ):
+        text = str(exc_info.value)
+        assert str(_USER_ID) not in text
+        assert "Distinctive Bank Name" not in text
+        assert distinctive_consent_handle not in text
+        assert distinctive_consent_id not in text
+        assert distinctive_account_id not in text
+        assert "distinctive-client-id-value" not in text
+        assert "distinctive-client-secret-value" not in text
+
+
+def test_setu_sandbox_credentials_alone_do_not_activate_the_provider() -> None:
+    """Phase F9: merely configuring SETU_SANDBOX_* values, without also
+    explicitly setting SYNC_PROVIDER=setu_sandbox, must never switch the
+    active provider away from the mock default - there is no implicit
+    "credentials present -> use them" activation anywhere in the factory."""
+    settings = get_settings().model_copy(
+        update={
+            "setu_sandbox_base_url": "https://sandbox.example.invalid",
+            "setu_sandbox_client_id": "some-client-id",
+            "setu_sandbox_client_secret": "some-client-secret",
+        }
+    )
+    assert settings.sync_provider == "mock"  # untouched by the update above
+
+    provider = build_sync_provider(settings)
+
+    assert isinstance(provider, MockSyncProvider)
+
+
 # --- runs without any real provider credentials configured ------------------
 
 

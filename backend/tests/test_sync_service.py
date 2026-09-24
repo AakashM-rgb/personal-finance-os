@@ -2315,3 +2315,247 @@ async def test_different_users_have_independent_rules_for_the_same_merchant_in_s
         if t["linked_account_id"] == str(their_linked.id)
     )
     assert their_synced["category_id"] == str(other_health_id)
+
+
+# --- Phase F9: end-to-end sandbox sync validation ----------------------------------------
+#
+# IMPORTANT: every transaction below is a LOCAL, DETERMINISTIC TEST FIXTURE, shaped to look
+# like a plausible Setu Account Aggregator sandbox response (Indian UPI/NEFT bank-statement
+# narrations, matching MockSyncProvider's own existing convention) - it is never real
+# customer data, and it is never the product of an actual network call to Setu or any other
+# provider. This section proves the EXISTING sync_service pipeline correctly ingests
+# Setu-shaped data end to end; it does NOT test real Setu sandbox connectivity, which
+# app.sync.provider.setu_sandbox.SetuSandboxSyncProvider does not implement (see that
+# module's own docstring and SYNC_PROVIDER.md §9). `_FakeSyncProvider` (defined earlier in
+# this file) is the same reusable, Protocol-conformant test double already used throughout
+# this suite - just configured here with Setu-sandbox-shaped fixture data instead of the
+# generic defaults.
+
+_SETU_SANDBOX_FIXTURE_ACCOUNT_ID = "setu-sandbox-fixture-acc-001"
+
+
+def _setu_sandbox_fixture_transactions() -> list[ExternalTransaction]:
+    """Deterministic local test fixture only - see the section docstring
+    above. Covers: a known merchant on each direction (SWIGGY/expense,
+    UBER/expense - both in the curated merchant-alias list, so both prove
+    the existing MERCHANT_MAP tier still auto-posts unchanged), an unknown-
+    merchant income credit (proves the existing "never guess" NONE-tier
+    behavior on a direction other than expense), a same-batch duplicate
+    external_transaction_id, and a malformed entry (amount_minor=0, fails
+    TransactionCreate's own positive-amount validation)."""
+    return [
+        ExternalTransaction(
+            external_transaction_id="setu-fixture-txn-001",
+            external_account_id=_SETU_SANDBOX_FIXTURE_ACCOUNT_ID,
+            occurred_on=date(2026, 9, 2),
+            amount_minor=45_000,
+            direction="debit",
+            narration="UPI/DR/450/SWIGGY/swiggy@icici/Food Order",
+        ),
+        ExternalTransaction(
+            external_transaction_id="setu-fixture-txn-002",
+            external_account_id=_SETU_SANDBOX_FIXTURE_ACCOUNT_ID,
+            occurred_on=date(2026, 9, 3),
+            amount_minor=18_000,
+            direction="debit",
+            narration="UPI/DR/180/UBER/uber@hdfcbank/Cab Ride",
+        ),
+        # Same external_transaction_id as the UBER entry above, repeated
+        # WITHIN this same fetched batch - proves the idempotency dedup
+        # check also protects a single sync run's own response, not only
+        # two separate trigger_sync calls (see test below).
+        ExternalTransaction(
+            external_transaction_id="setu-fixture-txn-002",
+            external_account_id=_SETU_SANDBOX_FIXTURE_ACCOUNT_ID,
+            occurred_on=date(2026, 9, 3),
+            amount_minor=18_000,
+            direction="debit",
+            narration="UPI/DR/180/UBER/uber@hdfcbank/Cab Ride",
+        ),
+        ExternalTransaction(
+            external_transaction_id="setu-fixture-txn-003",
+            external_account_id=_SETU_SANDBOX_FIXTURE_ACCOUNT_ID,
+            occurred_on=date(2026, 9, 5),
+            amount_minor=7_200_000,
+            direction="credit",
+            narration="NEFT/CR/N556677889900/SALARY EXAMPLE TECH PVT LTD",
+        ),
+        # Malformed: amount_minor=0 fails TransactionCreate's `gt=0`
+        # constraint - proves one bad fixture entry never blocks the rest
+        # of the batch (_IngestOutcome.FAILED for this one row only).
+        ExternalTransaction(
+            external_transaction_id="setu-fixture-txn-004-malformed",
+            external_account_id=_SETU_SANDBOX_FIXTURE_ACCOUNT_ID,
+            occurred_on=date(2026, 9, 6),
+            amount_minor=0,
+            direction="debit",
+            narration="UPI/DR/0/MALFORMED TEST ENTRY",
+        ),
+    ]
+
+
+async def test_setu_sandbox_shaped_fixture_end_to_end_flow(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Walks the full link -> complete -> linked account -> sync ->
+    ingestion -> sync history flow using local Setu-sandbox-SHAPED
+    deterministic fixture data (see the section docstring - never real
+    Setu connectivity), proving every existing pipeline stage - dedup,
+    deterministic categorization, ledger write path, SyncRun bookkeeping,
+    linked-account metadata, revoke-blocks-future-sync, and
+    revoke-preserves-history - already handles this data shape correctly
+    with zero changes to production code."""
+    user_id = await _get_user_id(client, auth_headers)
+    fake = _FakeSyncProvider(
+        name="fake-setu-sandbox-fixture",
+        institution_name="Setu Sandbox Fixture Bank",
+        external_account_id=_SETU_SANDBOX_FIXTURE_ACCOUNT_ID,
+        masked_account_ref="XX7788",
+        transactions=_setu_sandbox_fixture_transactions(),
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+
+    # 1. Initiate link.
+    initiation = await sync_service.initiate_link(db_session, user_id=user_id)
+    await db_session.commit()
+    assert initiation.provider == "fake-setu-sandbox-fixture"
+    assert initiation.consent_handle
+
+    # 2. Complete link.
+    linked_accounts = await sync_service.complete_link(
+        db_session, user_id=user_id, consent_handle=initiation.consent_handle
+    )
+    await db_session.commit()
+    assert len(linked_accounts) == 1
+    linked = linked_accounts[0]
+    assert linked.consent_status == SyncConsentStatus.ACTIVE
+    assert linked.account_id is not None  # auto-mapped, never left pending
+
+    # 3. Obtain linked account.
+    fetched = await sync_service.get_linked_account(
+        db_session, user_id=user_id, linked_account_id=linked.id
+    )
+    assert fetched.id == linked.id
+    assert fetched.masked_account_ref == "XX7788"
+
+    # 4-5. Trigger sync; provider transactions are retrieved.
+    first_run = await sync_service.trigger_sync(
+        db_session, user_id=user_id, linked_account_id=linked.id
+    )
+    await db_session.commit()
+    assert first_run.transactions_fetched == 5  # the raw fixture batch, duplicate included
+
+    # 6. Transactions pass through existing normalization/categorization -
+    # known merchants (SWIGGY, UBER) auto-post via the unchanged MERCHANT_MAP
+    # tier; the unknown-merchant salary credit is left Uncategorized/
+    # needs_review, exactly as it would be for any other provider.
+    categories = await client.get("/api/v1/categories", headers=auth_headers)
+    food_id = next(c["id"] for c in categories.json()["data"] if c["name"] == "Food")
+    transport_id = next(c["id"] for c in categories.json()["data"] if c["name"] == "Transport")
+
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = {
+        t["merchant"]: t
+        for t in transactions.json()["data"]
+        if t["linked_account_id"] == str(linked.id)
+    }
+    assert synced["Swiggy"]["category_id"] == food_id
+    assert synced["Swiggy"]["needs_review"] is False
+    assert synced["Uber"]["category_id"] == transport_id
+    assert synced["Uber"]["needs_review"] is False
+    salary_txn = next(t for t in synced.values() if t["type"] == "income")
+    assert salary_txn["category_id"] is None
+    assert salary_txn["needs_review"] is True
+
+    # 7-8. Created through the existing ledger path; SyncRun counters correct -
+    # 3 unique valid transactions created (Swiggy, Uber, salary), the
+    # in-batch UBER duplicate skipped, the malformed entry neither created
+    # nor counted as created/skipped.
+    assert first_run.transactions_created == 3
+    assert first_run.transactions_skipped_duplicate == 1
+    assert first_run.status.value == "partial"  # 1 malformed entry, but others succeeded
+    assert len(synced) == 3
+
+    # 9. Linked account sync metadata updated.
+    refreshed = await sync_service.get_linked_account(
+        db_session, user_id=user_id, linked_account_id=linked.id
+    )
+    assert refreshed.last_synced_at is not None
+    assert refreshed.last_sync_status == "partial"
+
+    # 10. Re-running the same sync does not duplicate transactions.
+    second_run = await sync_service.trigger_sync(
+        db_session, user_id=user_id, linked_account_id=linked.id
+    )
+    await db_session.commit()
+    assert second_run.transactions_created == 0
+    assert second_run.transactions_skipped_duplicate == 4  # every previously-created row
+    transactions_after_resync = await client.get(
+        "/api/v1/transactions?limit=50", headers=auth_headers
+    )
+    assert (
+        len([
+            t
+            for t in transactions_after_resync.json()["data"]
+            if t["linked_account_id"] == str(linked.id)
+        ])
+        == 3  # still exactly 3 - never duplicated
+    )
+
+    # 11. Revoke consent prevents subsequent sync.
+    revoked = await sync_service.revoke_link(
+        db_session, user_id=user_id, linked_account_id=linked.id
+    )
+    await db_session.commit()
+    assert revoked.consent_status == SyncConsentStatus.REVOKED
+    with pytest.raises(ValidationAppError):
+        await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+
+    # 12. Transactions already imported remain preserved after revoke.
+    transactions_after_revoke = await client.get(
+        "/api/v1/transactions?limit=50", headers=auth_headers
+    )
+    assert (
+        len([
+            t
+            for t in transactions_after_revoke.json()["data"]
+            if t["linked_account_id"] == str(linked.id)
+        ])
+        == 3
+    )
+
+    # Sync history itself is preserved and lists both runs.
+    runs = await sync_service.list_sync_runs(
+        db_session, user_id=user_id, linked_account_id=linked.id
+    )
+    assert len(runs) == 2
+
+
+async def test_setu_sandbox_shaped_fixture_empty_response_is_handled_safely(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty provider response (a linked account with no new activity)
+    must produce a clean, successful, zero-transaction SyncRun - never an
+    error, never a FAILED status."""
+    user_id = await _get_user_id(client, auth_headers)
+    fake = _FakeSyncProvider(
+        name="fake-setu-sandbox-fixture",
+        external_account_id=_SETU_SANDBOX_FIXTURE_ACCOUNT_ID,
+        transactions=[],
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    run = await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert run.status.value == "success"
+    assert run.transactions_fetched == 0
+    assert run.transactions_created == 0
+    assert run.transactions_skipped_duplicate == 0

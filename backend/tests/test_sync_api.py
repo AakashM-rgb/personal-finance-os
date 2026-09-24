@@ -307,6 +307,49 @@ async def test_manual_sync_provider_failure_returns_failed_run_not_500(
     assert "Traceback" not in run["error_message"]
 
 
+# --- Phase F9: real Setu sandbox seam selected through the API surface --------------
+
+
+async def test_setu_sandbox_provider_is_selectable_via_the_api_and_never_leaks_its_secret(
+    client: AsyncClient, auth_headers: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Proves SYNC_PROVIDER=setu_sandbox is genuinely selectable through
+    the real factory (not just constructible in isolation - see
+    test_sync_provider.py) and exercised through the real API surface -
+    never a fake/double standing in for it.
+
+    Every SetuSandboxSyncProvider operation still raises (Phase F8 - no
+    real Setu connectivity is implemented), and `initiate_link` has no
+    local try/except (see app.services.sync_service.initiate_link) - a
+    real deployed server would have this caught by the registered global
+    handler (app.core.errors.handle_unexpected_error), which always
+    returns a generic message, never a raw traceback or any exception
+    detail. httpx's ASGITransport (used by this test's `client` fixture)
+    re-raises the exception into the calling test instead of yielding that
+    response object - a known difference between this in-process test
+    transport and a real ASGI server (no existing test in this codebase
+    exercises the truly-unhandled-exception path any other way either),
+    not a security gap this phase should paper over or "fix" by changing
+    unrelated error-handling infrastructure. What this test CAN and does
+    verify directly: even a distinctive configured sandbox secret never
+    appears anywhere in what actually gets raised."""
+    from app.core.config import get_settings
+    from app.sync.provider.factory import build_sync_provider
+    from app.sync.provider.setu_sandbox import SetuSandboxNotImplementedError
+
+    distinctive_secret = "api-level-test-distinctive-secret-abc987"
+    settings = get_settings().model_copy(
+        update={"sync_provider": "setu_sandbox", "setu_sandbox_client_secret": distinctive_secret}
+    )
+    real_sandbox_provider = build_sync_provider(settings)
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: real_sandbox_provider)
+
+    with pytest.raises(SetuSandboxNotImplementedError) as exc_info:
+        await client.post("/api/v1/sync/links", headers=auth_headers, json={})
+
+    assert distinctive_secret not in str(exc_info.value)
+
+
 # --- D: unlink behavior --------------------------------------------------------------
 
 
