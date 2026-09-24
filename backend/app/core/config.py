@@ -63,6 +63,21 @@ class Settings(BaseSettings):
     sync_link_rate_limit: str = Field(default="10/minute", alias="SYNC_LINK_RATE_LIMIT")
     sync_trigger_rate_limit: str = Field(default="20/minute", alias="SYNC_TRIGGER_RATE_LIMIT")
 
+    # Setu sandbox Account Aggregator adapter (Phase F8) - SANDBOX/UAT ONLY,
+    # never a production credential. Only read when SYNC_PROVIDER=setu_sandbox;
+    # absent by default, same as every other optional integration in this
+    # app - selecting this provider can never require these to be set, since
+    # app.sync.provider.setu_sandbox.SetuSandboxSyncProvider makes no real
+    # request yet (see that module's own docstring for why). Field names are
+    # a placeholder shape (client_id/client_secret) - confirm the exact
+    # credential fields Setu's live API reference actually requires before
+    # any real implementation.
+    setu_sandbox_base_url: str | None = Field(default=None, alias="SETU_SANDBOX_BASE_URL")
+    setu_sandbox_client_id: str | None = Field(default=None, alias="SETU_SANDBOX_CLIENT_ID")
+    setu_sandbox_client_secret: str | None = Field(
+        default=None, alias="SETU_SANDBOX_CLIENT_SECRET"
+    )
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

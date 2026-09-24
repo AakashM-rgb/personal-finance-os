@@ -1,13 +1,16 @@
 """Tests for the read-only bank/Account-Aggregator sync-provider seam
-(app.sync.provider) - the deterministic mock provider, the BankSyncProvider
-Protocol it implements, the provider factory, and the hard security
-boundary that no payment/transfer/credential capability ever sneaks in."""
+(app.sync.provider) - the deterministic mock provider, the Setu sandbox
+adapter seam (Phase F8), the BankSyncProvider Protocol they implement, the
+provider factory, and the hard security boundary that no payment/transfer/
+credential capability ever sneaks in."""
 
 import dataclasses
 import inspect
 import re
 import uuid
 from datetime import date
+
+import pytest
 
 from app.core.config import Settings, get_settings
 from app.sync.provider.base import (
@@ -19,6 +22,10 @@ from app.sync.provider.base import (
 )
 from app.sync.provider.factory import build_sync_provider, get_sync_provider
 from app.sync.provider.mock import MockSyncProvider
+from app.sync.provider.setu_sandbox import (
+    SetuSandboxNotImplementedError,
+    SetuSandboxSyncProvider,
+)
 
 _USER_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
@@ -189,6 +196,92 @@ def test_get_sync_provider_is_cached_and_returns_mock_by_default() -> None:
     provider = get_sync_provider()
     assert isinstance(provider, MockSyncProvider)
     assert get_sync_provider() is provider
+
+
+# --- Setu sandbox adapter seam (Phase F8) ------------------------------------
+
+
+def test_build_sync_provider_returns_setu_sandbox_when_configured() -> None:
+    settings = get_settings().model_copy(update={"sync_provider": "setu_sandbox"})
+
+    provider = build_sync_provider(settings)
+
+    assert isinstance(provider, SetuSandboxSyncProvider)
+    assert provider.name == "setu_sandbox"
+
+
+def test_setu_sandbox_provider_construction_makes_no_network_request_and_never_raises() -> None:
+    """Mirrors app.ai.classifier.anthropic.AnthropicMerchantClassifier's own
+    lazy-construction guarantee: selecting this provider, even with every
+    credential field left unset, can never block or fail application
+    startup."""
+    provider = SetuSandboxSyncProvider(base_url=None, client_id=None, client_secret=None)
+    assert provider.name == "setu_sandbox"
+
+
+def test_setu_sandbox_provider_satisfies_bank_sync_provider_protocol() -> None:
+    provider = SetuSandboxSyncProvider(base_url=None, client_id=None, client_secret=None)
+    assert isinstance(provider, BankSyncProvider)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda p: p.initiate_link(user_id=_USER_ID),
+        lambda p: p.complete_link(consent_handle="h"),
+        lambda p: p.list_linked_institution_accounts(consent_id="c"),
+        lambda p: p.list_transactions(
+            consent_id="c", external_account_id="a", since=date(2026, 1, 1), until=date(2026, 1, 31)
+        ),
+        lambda p: p.revoke_consent(consent_id="c"),
+    ],
+)
+async def test_setu_sandbox_provider_every_operation_fails_safe_never_fabricates_data(call) -> None:
+    """req 6/7 (normalized-mapping / malformed-data safety, stub-appropriate
+    form): since no real HTTP call is made, there is no real response to
+    map or to receive malformed - what matters is that every single
+    Protocol operation fails via the SAME explicit, documented exception
+    rather than ever silently returning a plausible-looking but entirely
+    fabricated LinkInitiation/LinkCompletion/account/transaction."""
+    provider = SetuSandboxSyncProvider(base_url=None, client_id=None, client_secret=None)
+    with pytest.raises(SetuSandboxNotImplementedError):
+        await call(provider)
+
+
+async def test_setu_sandbox_provider_failure_never_exposes_the_configured_secret() -> None:
+    distinctive_secret = "sandbox-secret-distinctive-value-xyz123"
+    provider = SetuSandboxSyncProvider(
+        base_url="https://sandbox.example.invalid",
+        client_id="sandbox-client-id",
+        client_secret=distinctive_secret,
+    )
+
+    with pytest.raises(SetuSandboxNotImplementedError) as exc_info:
+        await provider.revoke_consent(consent_id="some-consent-id")
+
+    assert distinctive_secret not in str(exc_info.value)
+
+
+def test_setu_sandbox_provider_has_no_forbidden_methods_or_attributes() -> None:
+    public_members = {name for name in dir(SetuSandboxSyncProvider) if not name.startswith("_")}
+    _assert_no_forbidden_names(public_members)
+
+
+def test_setu_sandbox_settings_have_no_forbidden_credential_fields() -> None:
+    """Redundant with test_settings_has_no_forbidden_credential_fields
+    (which already scans every Settings field including the new
+    setu_sandbox_* ones) - kept as an explicit, narrowly-scoped assertion
+    so a future reader sees the Setu-specific guarantee directly, without
+    having to infer it from the generic whole-Settings scan."""
+    setu_fields = {
+        name for name in Settings.model_fields if name.startswith("setu_sandbox_")
+    }
+    assert setu_fields == {
+        "setu_sandbox_base_url",
+        "setu_sandbox_client_id",
+        "setu_sandbox_client_secret",
+    }
+    _assert_no_forbidden_names(setu_fields)
 
 
 # --- runs without any real provider credentials configured ------------------

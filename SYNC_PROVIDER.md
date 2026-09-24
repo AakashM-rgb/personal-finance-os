@@ -31,12 +31,17 @@ anything here ever appears to conflict with `CLAUDE.md`, `CLAUDE.md` wins.
   **existing** `app.services.transaction_service.create_transaction` path — there is not, and must
   never be, a second transaction-writing code path for synced data (see §6).
 
-## 2. Current state (as of Phase F6)
+## 2. Current state (as of Phase F8)
 
-`SYNC_PROVIDER=mock` is the only supported value today, and remains the default. Setting it to
-anything else raises a clear `RuntimeError` at provider-selection time (`app/sync/provider/factory.py`)
-rather than silently falling back to the mock or pretending a real integration ran. **No real
-provider, provider SDK, or provider credential is implemented in this or any prior phase.**
+`SYNC_PROVIDER=mock` remains the default and the only provider that does anything real (against
+deterministic fixture data). `SYNC_PROVIDER=setu_sandbox` (added in Phase F8) selects
+`SetuSandboxSyncProvider` — a **structural seam only**: every one of its five `BankSyncProvider`
+operations currently raises `SetuSandboxNotImplementedError` rather than making any network call.
+See §9 for exactly why, and what's required before that changes. Setting `SYNC_PROVIDER` to
+anything other than `mock`/`setu_sandbox` still raises a clear `RuntimeError` at provider-selection
+time (`app/sync/provider/factory.py`) rather than silently falling back to the mock or pretending a
+real integration ran. **No real, working provider integration, SDK, or production credential is
+implemented in this or any prior phase.**
 
 ## 3. The `BankSyncProvider` boundary
 
@@ -215,3 +220,52 @@ is actually undertaken:
    double for the real provider's HTTP client, never a real network call in the test suite.
 6. Never bypass `transaction_service.create_transaction` — every ledger write still goes through
    the exact same path a manually-entered or AI-assisted transaction takes.
+
+## 9. The Setu sandbox seam (Phase F8)
+
+**Which route was selected, and why (based only on `SYNC_PROVIDER_RESEARCH.md`):** Setu, because
+that research document's §E found it "the most immediately self-serviceable" of the sandboxes
+surveyed (publicly documented, pre-seeded sandbox keys, a published Postman collection, and
+explicit personal-finance-management support in its mock data) and its own §L named Setu's sandbox
+as the concrete next step. Selecting Setu here is an *engineering* choice about which sandbox to
+build the seam against first — it is not, and must not be read as, a decision about which provider
+(or whether any provider) this application will use in production; that remains the unresolved
+business/legal decision described in `SYNC_PROVIDER_RESEARCH.md` §D/§F.
+
+**Exact sandbox-only boundary:** `app/sync/provider/setu_sandbox.py`'s `SetuSandboxSyncProvider`
+implements the `BankSyncProvider` Protocol structurally (all five methods exist, with the correct
+signatures and return types), but **every method currently raises
+`SetuSandboxNotImplementedError`** instead of making any network call. Selecting
+`SYNC_PROVIDER=setu_sandbox` therefore cannot connect to any account, real or sandboxed, today —
+it is a compile-time-checkable contract seam, not a working integration.
+
+**Why it stops here rather than guessing:** `SYNC_PROVIDER_RESEARCH.md` was built from Setu's
+public documentation *landing pages*, and captured the conceptual flow shape (consent-create →
+redirect → status fetch → FI-data fetch → decrypt) but never captured concrete, implementable
+specifics — exact endpoint paths, exact request/response JSON schemas, or the exact authentication/
+signing mechanism. Phase F8's instructions were explicit that inventing any of those would be
+unsafe. See `app/sync/provider/setu_sandbox.py`'s own module docstring for the full reasoning and
+the exact numbered checklist of what a future implementer must confirm from Setu's *live* API
+reference before writing a single real HTTP call.
+
+**Required credentials/configuration, if any:** none are required today — `SetuSandboxSyncProvider`
+never reads them for any real purpose yet. Three optional, sandbox-only `Settings` fields exist as
+placeholders for when real implementation begins: `SETU_SANDBOX_BASE_URL`, `SETU_SANDBOX_CLIENT_ID`,
+`SETU_SANDBOX_CLIENT_SECRET` (see `.env.example`). Their field names (`client_id`/`client_secret`)
+are a *placeholder shape*, not a confirmed fact about Setu's actual auth mechanism — that must be
+verified against Setu's live API reference too.
+
+**What is intentionally NOT implemented:** all five operations' actual HTTP calls; response
+parsing; the AA encrypted-data-envelope decryption step; any mapping from a real Setu response
+into `ExternalTransaction`/`LinkedInstitutionAccount`/`LinkCompletion`; any retry/backoff behavior;
+any webhook receiver for asynchronous consent-status notifications (see `SYNC_PROVIDER_RESEARCH.md`
+§G's note that this would be a new HTTP route, not a `BankSyncProvider` change).
+
+**What must be completed before production financial-data access:** everything in §8 above, plus
+every item in `app/sync/provider/setu_sandbox.py`'s own docstring checklist, plus — as established
+in `SYNC_PROVIDER_RESEARCH.md` §D/§K — the underlying business/legal FIU-eligibility question,
+which is entirely outside this seam's or this document's scope.
+
+**This application has no payment or money-movement capability, in the mock provider, in this
+sandbox seam, or anywhere else in the codebase** — restated here for emphasis, not because
+anything about this phase changed it. See §1.
