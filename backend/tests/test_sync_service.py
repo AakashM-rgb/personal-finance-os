@@ -3,11 +3,13 @@
 (dedup/normalize/categorize/confidence), SyncRun bookkeeping, and the
 security invariants the pipeline must never violate."""
 
+import ast
 import inspect
 import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -15,6 +17,11 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.classifier.base import (
+    MerchantClassificationRequest,
+    MerchantClassificationResult,
+    validate_classification,
+)
 from app.core.errors import NotFoundError, ValidationAppError
 from app.models.linked_account import LinkedAccount, SyncConsentStatus
 from app.models.sync_run import SyncRun, SyncRunStatus
@@ -22,6 +29,7 @@ from app.repositories.transaction_repository import TransactionRepository
 from app.schemas.sync import LinkedAccountRead
 from app.schemas.transaction import TransactionCreate
 from app.services import merchant_rule_service, sync_service, transaction_service
+from app.services.merchant_normalization import normalize_merchant
 from app.sync.provider.base import (
     ExternalTransaction,
     LinkCompletion,
@@ -30,6 +38,38 @@ from app.sync.provider.base import (
 )
 
 _FAKE_EXTERNAL_ACCOUNT_ID = "fake-acc-001"
+
+
+@dataclass
+class _FakeMerchantClassifier:
+    """A fake MerchantClassifier for sync-pipeline tests - never the real
+    mock or Anthropic implementation, and never a real network call.
+    Routes every response through the SAME validate_classification choke
+    point a real implementation uses, so a test can't accidentally exercise
+    behavior a real implementation wouldn't actually produce (e.g. an
+    out-of-allow-list category "succeeding"). `error`, when set, is raised
+    instead of returning a result, to exercise sync_service's fail-safe
+    handling. `calls` records every request this classifier actually
+    received, for tests to inspect - both "was it called at all" and
+    "what exactly was in the request"."""
+
+    name: str = "fake"
+    category_name: str | None = None
+    confidence: float = 0.9
+    error: Exception | None = None
+    calls: list[MerchantClassificationRequest] = field(default_factory=list)
+
+    async def classify(
+        self, request: MerchantClassificationRequest
+    ) -> MerchantClassificationResult:
+        self.calls.append(request)
+        if self.error is not None:
+            raise self.error
+        return validate_classification(
+            category_name=self.category_name,
+            confidence=self.confidence,
+            category_names=request.category_names,
+        )
 
 
 @dataclass
@@ -578,20 +618,23 @@ async def test_disabled_user_unknown_merchant_behavior_is_unchanged(
     assert synced["needs_review"] is True
 
 
-async def test_enabled_user_unknown_merchant_behavior_is_unchanged_pending_classifier(
+async def test_enabled_user_ai_with_no_category_stays_uncategorized_and_needs_review(
     client: AsyncClient,
     auth_headers: dict,
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Opting in to ai_categorization_enabled must NOT change today's
-    outcome, since no AI classifier is implemented yet - the setting only
-    prepares the gate a future classifier tier will run behind. An unknown
-    merchant still ends up Uncategorized + needs_review=True."""
+    """Phase F3: with ai_categorization_enabled=True and every deterministic
+    tier missing, the AI tier is now genuinely reached - but a classifier
+    that itself declines to classify (category_name=None) must produce
+    exactly the same outcome as no tier matching at all: Uncategorized +
+    needs_review=True, tier falls to NONE."""
     user_id = await _get_user_id(client, auth_headers)
     await client.patch(
         "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
     )
+    fake_classifier = _FakeMerchantClassifier(category_name=None)
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
 
     fake = _FakeSyncProvider(
         transactions=[
@@ -606,6 +649,8 @@ async def test_enabled_user_unknown_merchant_behavior_is_unchanged_pending_class
 
     await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
     await db_session.commit()
+
+    assert len(fake_classifier.calls) == 1
 
     transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
     synced = next(
@@ -623,19 +668,25 @@ async def test_enabled_user_known_merchant_still_auto_posts_via_merchant_map(
 ) -> None:
     """Regression: enabling ai_categorization_enabled must not disturb the
     existing deterministic tiers - a recognized merchant still auto-posts
-    via MERCHANT_MAP exactly as before."""
+    via MERCHANT_MAP exactly as before, and the AI classifier (now genuinely
+    wired in) is never even attempted, proven with a classifier that raises
+    if it's ever called."""
     user_id = await _get_user_id(client, auth_headers)
     await client.patch(
         "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
     )
+    fake_classifier = _FakeMerchantClassifier(category_name="Transport")
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
 
     fake = _FakeSyncProvider(transactions=[_ext_txn(narration="UPI/DR/399/SWIGGY/paytm@ybl/Order")])
     monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
     linked = await _link(db_session, user_id=user_id)
 
-    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    run = await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
     await db_session.commit()
 
+    assert run.status.value == "success"
+    assert fake_classifier.calls == []  # MERCHANT_MAP won - AI is never even attempted
     categories = await client.get("/api/v1/categories", headers=auth_headers)
     food_id = next(c["id"] for c in categories.json()["data"] if c["name"] == "Food")
 
@@ -645,6 +696,520 @@ async def test_enabled_user_known_merchant_still_auto_posts_via_merchant_map(
     )
     assert synced["category_id"] == food_id
     assert synced["needs_review"] is False
+
+
+# --- Phase F3: AI_CLASSIFIER tier ------------------------------------------------------
+
+
+async def test_ai_not_called_when_disabled_by_default(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 1 & 13: ai_categorization_enabled defaults to False - a fresh
+    user's sync never invokes the classifier at all, even for a merchant no
+    deterministic tier can resolve."""
+    user_id = await _get_user_id(client, auth_headers)
+    fake_classifier = _FakeMerchantClassifier(category_name="Food")
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    fake = _FakeSyncProvider(
+        transactions=[_ext_txn(narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase")]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert fake_classifier.calls == []
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] is None
+    assert synced["needs_review"] is True
+
+
+async def test_ai_called_when_enabled_and_deterministic_tiers_all_miss(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 2 & 6: with the setting on and no deterministic tier matching,
+    a valid AI classification IS applied - category set, needs_review
+    still True (never fully trusted)."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    fake_classifier = _FakeMerchantClassifier(category_name="Food", confidence=0.87)
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    fake = _FakeSyncProvider(
+        transactions=[_ext_txn(narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase")]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert len(fake_classifier.calls) == 1
+    categories = await client.get("/api/v1/categories", headers=auth_headers)
+    food_id = next(c["id"] for c in categories.json()["data"] if c["name"] == "Food")
+
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] == food_id
+    assert synced["needs_review"] is True  # AI is never treated as fully trusted
+
+
+async def test_categorize_returns_ai_classifier_tier_for_a_valid_ai_category(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+) -> None:
+    """Direct unit-level check (bypassing the HTTP layer) that the returned
+    tier enum is exactly CategorizationTier.AI_CLASSIFIER - the tier value
+    itself isn't observable through the transactions API, so this is
+    asserted directly against _categorize's return value."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    food_id = await _get_category_id(client, auth_headers, "Food")
+    fake_classifier = _FakeMerchantClassifier(category_name="Food")
+    normalized = normalize_merchant("UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase")
+
+    category_id, tier = await sync_service._categorize(
+        db_session,
+        user_id=user_id,
+        classifier=fake_classifier,
+        normalized=normalized,
+        transaction_type="expense",
+        amount_minor=50000,
+        currency="INR",
+        category_names=["Food", "Shopping"],
+        category_id_by_name={"Food": food_id, "Shopping": food_id},
+    )
+
+    assert tier is sync_service.CategorizationTier.AI_CLASSIFIER
+    assert category_id == food_id
+
+
+async def test_user_rule_beats_ai_classifier_never_called(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 3: a USER_RULE hit means the classifier is never attempted,
+    regardless of the AI opt-in setting."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    health_id = await _get_category_id(client, auth_headers, "Health")
+    await merchant_rule_service.upsert_rule(
+        db_session,
+        user_id=user_id,
+        raw_merchant="NEFT/DR/N999999999999/CORNER RESTAURANT PAYMENT",
+        category_id=health_id,
+    )
+    await db_session.commit()
+    fake_classifier = _FakeMerchantClassifier(category_name="Food")
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                external_transaction_id="ext-user-rule-beats-ai",
+                narration="NEFT/DR/N999999999999/CORNER RESTAURANT PAYMENT",
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert fake_classifier.calls == []
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] == str(health_id)
+    assert synced["needs_review"] is False
+
+
+async def test_keyword_beats_ai_classifier_never_called(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 5: a KEYWORD hit means the classifier is never attempted - and,
+    exactly like today, the KEYWORD suggestion itself is still discarded
+    (category stays None, needs_review True), unaffected by AI being
+    enabled."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    fake_classifier = _FakeMerchantClassifier(category_name="Shopping")
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                external_transaction_id="ext-keyword-beats-ai",
+                narration="NEFT/DR/N999999999999/CORNER RESTAURANT PAYMENT",
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert fake_classifier.calls == []
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] is None
+    assert synced["needs_review"] is True
+
+
+async def test_ai_invalid_category_is_rejected_end_to_end(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 8: a classifier "claiming" a category outside the user's own
+    list must never result in a fabricated category being stored - the
+    transaction still proceeds, just without a category."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    fake_classifier = _FakeMerchantClassifier(category_name="Not A Real Category")
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    fake = _FakeSyncProvider(
+        transactions=[_ext_txn(narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase")]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    run = await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert run.transactions_created == 1  # still ingested
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] is None
+    assert synced["needs_review"] is True
+
+
+async def test_categorize_rejects_a_category_even_if_the_classifier_itself_did_not(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+) -> None:
+    """Defense-in-depth: _categorize must not blindly trust
+    result.category_name even from a (hypothetically buggy) classifier
+    implementation that skipped its own allow-list validation - the
+    membership re-check in _classify_with_ai is not the only thing
+    standing between AI output and the ledger, but it must still work on
+    its own."""
+
+    class _BypassingClassifier:
+        name = "bypassing"
+
+        async def classify(
+            self, request: MerchantClassificationRequest
+        ) -> MerchantClassificationResult:
+            # Deliberately skips validate_classification - simulates a
+            # non-conformant implementation "claiming" a category outside
+            # request.category_names.
+            return MerchantClassificationResult(category_name="Totally Made Up", confidence=0.99)
+
+    user_id = await _get_user_id(client, auth_headers)
+    food_id = await _get_category_id(client, auth_headers, "Food")
+    normalized = normalize_merchant("UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase")
+
+    category_id, tier = await sync_service._categorize(
+        db_session,
+        user_id=user_id,
+        classifier=_BypassingClassifier(),
+        normalized=normalized,
+        transaction_type="expense",
+        amount_minor=50000,
+        currency="INR",
+        category_names=["Food"],
+        category_id_by_name={"Food": food_id},
+    )
+
+    assert category_id is None
+    assert tier is sync_service.CategorizationTier.NONE
+
+
+async def test_ai_raises_exception_ingestion_still_succeeds(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 9: a classifier that raises must never fail the SyncRun or block
+    ingestion - the transaction is still created, just uncategorized."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    fake_classifier = _FakeMerchantClassifier(error=RuntimeError("simulated classifier crash"))
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    fake = _FakeSyncProvider(
+        transactions=[_ext_txn(narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase")]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    run = await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert run.status.value == "success"
+    assert run.transactions_created == 1
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] is None
+    assert synced["needs_review"] is True
+
+
+async def test_ai_timeout_ingestion_still_succeeds(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 10: same fail-safe behavior for a timeout specifically."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    fake_classifier = _FakeMerchantClassifier(error=TimeoutError("simulated timeout"))
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    fake = _FakeSyncProvider(
+        transactions=[_ext_txn(narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase")]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    run = await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert run.status.value == "success"
+    assert run.transactions_created == 1
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] is None
+    assert synced["needs_review"] is True
+
+
+async def test_ai_high_confidence_is_still_needs_review(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 11: even a 0.99-confidence AI classification is never treated as
+    fully trusted - needs_review is always True for AI_CLASSIFIER."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    fake_classifier = _FakeMerchantClassifier(category_name="Food", confidence=0.99)
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    fake = _FakeSyncProvider(
+        transactions=[_ext_txn(narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase")]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    categories = await client.get("/api/v1/categories", headers=auth_headers)
+    food_id = next(c["id"] for c in categories.json()["data"] if c["name"] == "Food")
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] == food_id
+    assert synced["needs_review"] is True
+
+
+async def test_ai_low_confidence_category_still_populated_and_needs_review(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 12: a low self-reported AI confidence doesn't block the category
+    from being applied - the category/confidence-value distinction doesn't
+    change whether category_id is populated, only that needs_review is
+    always True for this tier either way."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    fake_classifier = _FakeMerchantClassifier(category_name="Food", confidence=0.12)
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    fake = _FakeSyncProvider(
+        transactions=[_ext_txn(narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase")]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    categories = await client.get("/api/v1/categories", headers=auth_headers)
+    food_id = next(c["id"] for c in categories.json()["data"] if c["name"] == "Food")
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] == food_id
+    assert synced["needs_review"] is True
+
+
+async def test_ai_classifier_request_contains_only_allowed_fields(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 15, 16 & 17: the exact request sent to the classifier carries
+    only merchant/transaction_type/amount_minor/currency/category_names -
+    the normalized merchant, never the raw narration - and structurally
+    has no field for a user/account/provider identifier at all."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    fake_classifier = _FakeMerchantClassifier(category_name="Food")
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    raw_narration = "UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase"
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(narration=raw_narration, amount_minor=123456, direction="debit")
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert len(fake_classifier.calls) == 1
+    request = fake_classifier.calls[0]
+
+    # Exactly the allowed fields - nothing else on the model at all.
+    assert set(type(request).model_fields) == {
+        "merchant",
+        "transaction_type",
+        "amount_minor",
+        "currency",
+        "category_names",
+    }
+    assert request.transaction_type == "expense"
+    assert request.amount_minor == 123456
+    assert request.currency == "INR"
+    assert isinstance(request.category_names, tuple)
+    assert "Food" in request.category_names
+
+    # The normalized merchant, never the raw provider narration.
+    assert request.merchant != raw_narration
+    assert "UPI" not in request.merchant
+    assert "xyz@upi" not in request.merchant
+
+    # No user/account/provider identifier of any kind is even possible -
+    # the model has no such field to check a value against.
+    for forbidden_attr in (
+        "user_id",
+        "account_id",
+        "linked_account_id",
+        "external_transaction_id",
+        "consent_id",
+        "narration",
+    ):
+        assert not hasattr(request, forbidden_attr)
+
+
+async def test_ai_classification_never_duplicates_or_bypasses_transaction_creation(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req 18: the classifier cannot write to the database - it has no
+    session and no way to. This proves the ONLY effect an AI classification
+    has is on the single transaction create_transaction already writes -
+    exactly one transaction row results, never zero, never two."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    fake_classifier = _FakeMerchantClassifier(category_name="Food")
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+
+    fake = _FakeSyncProvider(
+        transactions=[_ext_txn(narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase")]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    before = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    before_count = len(before.json()["data"])
+
+    run = await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    after = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    after_count = len(after.json()["data"])
+
+    assert run.transactions_created == 1
+    assert after_count - before_count == 1
+
+
+def test_sync_service_module_has_no_forbidden_names_anywhere() -> None:
+    """req 19: extends test_sync_service_has_no_forbidden_public_functions'
+    check to EVERY name defined in the module (including the new private
+    _classify_with_ai/_categorize helpers), via ast parsing of the source
+    itself rather than runtime introspection - confirms Phase F3 introduced
+    no payment/transfer/withdrawal-shaped identifier anywhere."""
+    tree = ast.parse(Path(inspect.getfile(sync_service)).read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+    _assert_no_forbidden_names(names)
 
 
 async def test_trigger_sync_preserves_raw_narration_as_description(

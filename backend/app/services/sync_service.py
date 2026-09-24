@@ -10,7 +10,8 @@ LinkedAccount/SyncRun row is created or mutated.
            unique constraint on Transaction.idempotency_key is the final
            race-safety backstop, exactly like offline/PWA sync)
         -> categorize (app.services.merchant_rule_service, then
-           app.services.keyword_categorization)
+           app.services.keyword_categorization, then - only if those all
+           miss and the user has opted in - app.ai.classifier)
         -> decide confidence
         -> transaction_service.create_transaction (the SAME path a
            manually-created transaction takes - there is no second,
@@ -24,6 +25,9 @@ transaction is still created immediately - never silently guessed at or
 dropped - but with category_id left NULL (the existing Uncategorized
 convention, see app.services.category_service) and needs_review=True (see
 app.models.transaction) so a later phase's review-queue UI can surface it.
+The one exception is the AI_CLASSIFIER tier (see _categorize): it is never
+high confidence, but unlike a bare KEYWORD match, its suggested category IS
+stored - always alongside needs_review=True, never presented as trusted.
 A user's correction to a synced transaction goes through the existing
 transaction_service.update_transaction like any other edit - nothing here
 invents a second way to change one. When the user explicitly opts in
@@ -32,6 +36,22 @@ persisted as a MerchantCategoryRule (see app.services.merchant_rule_service)
 and this module's own tier-1 categorization lookup (_resolve_user_rule_category)
 applies it to every future synced transaction from the same merchant -
 still fully deterministic, never an AI guess.
+
+AI-assisted categorization (Tier 4, AI_CLASSIFIER) is the one exception to
+"never an AI guess" above, and it is deliberately narrow: only attempted
+after USER_RULE, MERCHANT_MAP, and KEYWORD have all missed; only for a user
+whose ai_categorization_enabled setting is true (read fresh from the
+database on every call - see _ai_categorization_enabled_for_user); through
+the existing app.ai.classifier.MerchantClassifier abstraction only (never
+app.ai.provider, a different, conversational abstraction - see
+app.ai.classifier.base's own docstring); and via
+app.ai.classifier.factory.get_merchant_classifier only - this module never
+instantiates AnthropicMerchantClassifier or imports the anthropic SDK
+directly. A classifier failure of any kind (missing key, no SDK, network
+error, timeout, malformed response, an invalid or unrecognized category, or
+an inability to load this user's own category list) is caught at the
+categorization boundary and treated as no AI classification - it can never
+fail a SyncRun or block a transaction's ingestion.
 
 This module never identifies two transactions as a transfer - that stays
 an explicit user action via the existing transaction-editing flow
@@ -55,6 +75,8 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.classifier.base import MerchantClassificationRequest, MerchantClassifier
+from app.ai.classifier.factory import get_merchant_classifier
 from app.core.errors import NotFoundError, ValidationAppError
 from app.models.account import AccountType
 from app.models.linked_account import LinkedAccount, SyncConsentStatus
@@ -95,6 +117,7 @@ class CategorizationTier(enum.StrEnum):
     USER_RULE = "user_rule"
     MERCHANT_MAP = "merchant_map"
     KEYWORD = "keyword"
+    AI_CLASSIFIER = "ai_classifier"
     NONE = "none"
 
 
@@ -363,24 +386,88 @@ async def _ai_categorization_enabled_for_user(db: AsyncSession, *, user_id: uuid
     return settings is not None and settings.ai_categorization_enabled
 
 
+async def _classify_with_ai(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    classifier: MerchantClassifier,
+    normalized: NormalizedMerchant,
+    transaction_type: Literal["income", "expense"],
+    amount_minor: int,
+    currency: str,
+    category_names: list[str],
+    category_id_by_name: dict[str, uuid.UUID],
+) -> tuple[uuid.UUID | None, CategorizationTier]:
+    """Tier 4 - only ever reached once USER_RULE, MERCHANT_MAP, and KEYWORD
+    have all missed (see _categorize). Everything that can go wrong here -
+    the user hasn't opted in, category_names couldn't be built safely, the
+    classifier raises, times out, or returns something invalid - fails
+    closed to (None, NONE), exactly the same outcome as a merchant no tier
+    recognizes at all. AI classification can NEVER fail a SyncRun or block
+    a transaction's ingestion (see the module docstring).
+
+    `classifier` is always obtained by the caller via
+    app.ai.classifier.factory.get_merchant_classifier - this function
+    never selects, constructs, or imports a specific implementation (mock
+    or Anthropic) itself, and never imports the anthropic SDK.
+
+    The request sent to the classifier carries ONLY `merchant` (the
+    already-normalized canonical name - never raw provider narration),
+    `transaction_type`, `amount_minor`, `currency`, and this user's own
+    `category_names` - see app.ai.classifier.base.MerchantClassificationRequest,
+    which structurally has no field for a user_id, linked_account_id,
+    external_transaction_id, account number, balance, or any credential."""
+    if not await _ai_categorization_enabled_for_user(db, user_id=user_id):
+        return None, CategorizationTier.NONE
+
+    try:
+        request = MerchantClassificationRequest(
+            merchant=normalized.canonical_name,
+            transaction_type=transaction_type,
+            amount_minor=amount_minor,
+            currency=currency,
+            category_names=tuple(category_names),
+        )
+        result = await classifier.classify(request)
+    except Exception:  # noqa: BLE001 - an AI/category-list failure must never block sync ingestion
+        logger.warning(
+            "ai_categorization_failed",
+            extra={"user_id": str(user_id), "classifier": classifier.name},
+            exc_info=True,
+        )
+        return None, CategorizationTier.NONE
+
+    # Defense-in-depth, not the only check: the classifier itself (via
+    # app.ai.classifier.base.validate_classification) already guarantees
+    # `result.category_name` is either None or a member of
+    # `request.category_names` - this re-check means sync_service never
+    # depends solely on that one implementation's own discipline to keep a
+    # fabricated category out of the ledger.
+    if result.category_name is None or result.category_name not in category_id_by_name:
+        return None, CategorizationTier.NONE
+
+    return category_id_by_name[result.category_name], CategorizationTier.AI_CLASSIFIER
+
+
 async def _categorize(
     db: AsyncSession,
     *,
     user_id: uuid.UUID,
+    classifier: MerchantClassifier,
     normalized: NormalizedMerchant,
+    transaction_type: Literal["income", "expense"],
+    amount_minor: int,
+    currency: str,
     category_names: list[str],
     category_id_by_name: dict[str, uuid.UUID],
 ) -> tuple[uuid.UUID | None, CategorizationTier]:
     """The categorization priority order: a user-defined rule (see
     _resolve_user_rule_category / app.services.merchant_rule_service), then
-    a known-merchant mapping, then a generic keyword match, then
-    Uncategorized. An AI-classifier tier is NOT implemented yet - only the
-    opt-in gate it will run behind is (_ai_categorization_enabled_for_user).
-    When that tier is added it must be attempted only after tiers 1-3 all
-    miss, and only when the gate returns True: app.ai.provider is a
-    conversational tool-calling abstraction, not a one-shot deterministic
-    classifier, so it needs (and will get) its own narrow classifier
-    interface rather than reusing that one."""
+    a known-merchant mapping, then a generic keyword match, then - only if
+    every one of those misses - AI-assisted classification (see
+    _classify_with_ai), then Uncategorized. A deterministic tier hit always
+    wins outright: AI is never even attempted once USER_RULE, MERCHANT_MAP,
+    or KEYWORD has already produced a category."""
     user_rule_category_id = await _resolve_user_rule_category(
         db, user_id=user_id, canonical_merchant=normalized.canonical_name
     )
@@ -400,15 +487,17 @@ async def _categorize(
     if keyword_category_name is not None:
         return category_id_by_name[keyword_category_name], CategorizationTier.KEYWORD
 
-    # Tier 4 (future AI classifier, not yet implemented): only even
-    # eligible once tiers 1-3 have all missed, and only for a user who has
-    # explicitly opted in. No classifier exists yet, so `ai_categorization_allowed`
-    # is unused beyond this gate check - it never invokes an AI provider,
-    # and there is nothing here to invoke-then-discard.
-    ai_categorization_allowed = await _ai_categorization_enabled_for_user(db, user_id=user_id)
-    del ai_categorization_allowed  # Phase F: branch on this to call the classifier
-
-    return None, CategorizationTier.NONE
+    return await _classify_with_ai(
+        db,
+        user_id=user_id,
+        classifier=classifier,
+        normalized=normalized,
+        transaction_type=transaction_type,
+        amount_minor=amount_minor,
+        currency=currency,
+        category_names=category_names,
+        category_id_by_name=category_id_by_name,
+    )
 
 
 def _decide_confidence(
@@ -424,9 +513,16 @@ def _decide_confidence(
     is curated, generic data, a weaker signal than something the user
     explicitly taught. The generic keyword match alone (only ever looked
     at free text, never a confirmed merchant identity) is never high
-    confidence. Every other case (unknown merchant, keyword-only match, no
-    match at all) is low confidence: category_id is left NULL and
-    needs_review is set, never guessed."""
+    confidence. AI_CLASSIFIER is never high confidence either, by design -
+    an AI suggestion is never treated as fully trusted no matter how
+    confident the model itself reports being (see _classify_with_ai and
+    the module docstring) - it falls into this same "every other case" low
+    bucket below. The one place AI_CLASSIFIER is NOT treated identically to
+    every other low-confidence tier is in _ingest_one, which still stores
+    its suggested category_id (unlike a bare KEYWORD match, always
+    discarded) alongside needs_review=True. Every other low-confidence case
+    (unknown merchant, keyword-only match, no match at all) leaves
+    category_id NULL and needs_review set, never guessed."""
     if tier is CategorizationTier.USER_RULE:
         return "high"
     if tier is CategorizationTier.MERCHANT_MAP and normalized.recognized:
@@ -476,6 +572,8 @@ async def _ingest_one(
     user_id: uuid.UUID,
     linked_account: LinkedAccount,
     account_id: uuid.UUID,
+    currency: str,
+    classifier: MerchantClassifier,
     ext_txn: ExternalTransaction,
     category_names: list[str],
     category_id_by_name: dict[str, uuid.UUID],
@@ -488,6 +586,15 @@ async def _ingest_one(
 
     # 2-3. Determine the internal account (passed in) and normalize the merchant.
     normalized = normalize_merchant(ext_txn.narration)
+    transaction_type = (
+        TransactionType.EXPENSE if ext_txn.direction == "debit" else TransactionType.INCOME
+    )
+    # The same direction, as the plain Literal app.ai.classifier.base expects -
+    # computed independently of the TransactionType enum so this module
+    # never needs to teach the classifier package about its own enum type.
+    ai_transaction_type: Literal["income", "expense"] = (
+        "expense" if ext_txn.direction == "debit" else "income"
+    )
 
     # 4/6. Idempotency key and duplicate check - the pre-check here is only
     # for accurate SyncRun statistics; create_transaction's own
@@ -502,22 +609,27 @@ async def _ingest_one(
     category_id, tier = await _categorize(
         db,
         user_id=user_id,
+        classifier=classifier,
         normalized=normalized,
+        transaction_type=ai_transaction_type,
+        amount_minor=ext_txn.amount_minor,
+        currency=currency,
         category_names=category_names,
         category_id_by_name=category_id_by_name,
     )
     confidence = _decide_confidence(normalized, tier)
-
-    transaction_type = (
-        TransactionType.EXPENSE if ext_txn.direction == "debit" else TransactionType.INCOME
-    )
+    # AI_CLASSIFIER is the one tier whose category is stored despite never
+    # being high confidence - unlike a bare KEYWORD match (always
+    # discarded), see _decide_confidence's docstring and the module
+    # docstring for why. It is always paired with needs_review=True below.
+    apply_category = confidence == "high" or tier is CategorizationTier.AI_CLASSIFIER
 
     try:
         data = TransactionCreate(
             account_id=account_id,
             type=transaction_type,
             amount_minor=ext_txn.amount_minor,
-            category_id=category_id if confidence == "high" else None,
+            category_id=category_id if apply_category else None,
             merchant=normalized.canonical_name[:200],
             description=ext_txn.narration[:500],
             occurred_at=datetime.combine(ext_txn.occurred_on, time.min, tzinfo=UTC),
@@ -646,6 +758,12 @@ async def trigger_sync(
     categories = await CategoryRepository(db).list_visible_for_user(user_id, include_inactive=False)
     category_names = [category.name for category in categories]
     category_id_by_name = {category.name: category.id for category in categories}
+    currency = await _resolve_user_currency(db, user_id)
+    # Selected once per sync run, never per transaction - the factory (mock
+    # or Anthropic, chosen entirely by app.ai.classifier.factory) is the
+    # only thing that decides which implementation this is; this module
+    # never instantiates a specific one itself.
+    classifier = get_merchant_classifier()
 
     created_count = 0
     skipped_count = 0
@@ -656,6 +774,8 @@ async def trigger_sync(
             user_id=user_id,
             linked_account=linked_account,
             account_id=account_id,
+            currency=currency,
+            classifier=classifier,
             ext_txn=ext_txn,
             category_names=category_names,
             category_id_by_name=category_id_by_name,
