@@ -5,6 +5,7 @@ security invariants the pipeline must never violate."""
 
 import ast
 import inspect
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -993,6 +994,52 @@ async def test_ai_raises_exception_ingestion_still_succeeds(
     )
     assert synced["category_id"] is None
     assert synced["needs_review"] is True
+
+
+async def test_ai_categorization_failure_log_contains_no_sensitive_data(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Phase F5 production-readiness check, at the sync-service boundary
+    (complements the classifier-level equivalent in test_ai_classifier.py):
+    the ai_categorization_failed warning logged by _classify_with_ai must
+    carry only safe, structured metadata (user_id - expected, matching
+    every other log line in this module - and the classifier's own safe
+    `name` label) and must never include the merchant name, category
+    names, or transaction amount anywhere in its text."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    fake_classifier = _FakeMerchantClassifier(error=RuntimeError("simulated classifier crash"))
+    monkeypatch.setattr(sync_service, "get_merchant_classifier", lambda: fake_classifier)
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase",
+                amount_minor=987654,
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    with caplog.at_level(logging.WARNING, logger="app.sync"):
+        await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    failure_records = [r for r in caplog.records if r.message == "ai_categorization_failed"]
+    assert len(failure_records) == 1
+    record = failure_records[0]
+    assert record.user_id == str(user_id)
+    assert record.classifier == "fake"
+
+    full_text = caplog.text
+    assert "SOME RANDOM LOCAL SHOP" not in full_text
+    assert "987654" not in full_text
 
 
 async def test_ai_timeout_ingestion_still_succeeds(

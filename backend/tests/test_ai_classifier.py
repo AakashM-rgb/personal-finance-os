@@ -658,6 +658,44 @@ async def test_anthropic_classifier_fails_safe_on_api_error() -> None:
     assert result.confidence == 0.0
 
 
+async def test_anthropic_classifier_failure_log_contains_no_sensitive_data(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Phase F5 production-readiness check: a genuine failure IS logged
+    (unlike the clean no-match case - see
+    test_anthropic_classifier_handles_omitted_category_name_cleanly), but
+    only with safe, structured metadata (CLAUDE.md - "never log secrets or
+    full payloads of sensitive data"; same discipline as
+    app.ai.tools.registry). The merchant name, category names, amount, and
+    the API key must never appear anywhere in the log record - not as a
+    field value, and not embedded in the logged exception text."""
+    api_key = "sk-ant-test-distinctive-secret-value-12345"
+    fake_client = _FakeAnthropicClient(exception=RuntimeError("simulated API error"))
+    classifier = AnthropicMerchantClassifier(
+        api_key=api_key, model="claude-sonnet-5", client=fake_client
+    )
+    request = MerchantClassificationRequest(
+        merchant="Very Distinctive Merchant Name",
+        amount_minor=123456,
+        currency="INR",
+        category_names=("Very Distinctive Category",),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.ai.classifier"):
+        await classifier.classify(request)
+
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.message == "ai_classifier_request_failed"
+    assert record.classifier == "anthropic"
+
+    full_text = caplog.text
+    assert api_key not in full_text
+    assert "Very Distinctive Merchant Name" not in full_text
+    assert "Very Distinctive Category" not in full_text
+    assert "123456" not in full_text
+
+
 # 8. timeout fails safely
 
 
