@@ -9,6 +9,7 @@ const BASE_SETTINGS = {
   currency: "INR",
   theme: "system" as const,
   ai_enabled: true,
+  ai_categorization_enabled: false,
   notification_preferences: {
     budget_warnings: true,
     payment_reminders: true,
@@ -95,5 +96,60 @@ describe("PreferencesSection", () => {
 
     await waitFor(() => expect(spy).toHaveBeenCalledWith("token", { ai_enabled: false }));
     expect(checkbox).not.toBeChecked();
+  });
+
+  it("renders the AI-categorization checkbox unchecked by default", () => {
+    render(<PreferencesSection accessToken="token" settings={BASE_SETTINGS} />);
+    const checkbox = screen.getByRole("checkbox", {
+      name: "Let AI suggest categories for synced transactions",
+    });
+    expect(checkbox).not.toBeChecked();
+  });
+
+  it("toggles the AI-categorization checkbox and saves only that field", async () => {
+    const spy = vi
+      .spyOn(settingsLib, "updateSettings")
+      .mockResolvedValue({ ...BASE_SETTINGS, ai_categorization_enabled: true });
+
+    render(<PreferencesSection accessToken="token" settings={BASE_SETTINGS} />);
+    const checkbox = screen.getByRole("checkbox", {
+      name: "Let AI suggest categories for synced transactions",
+    });
+    expect(checkbox).not.toBeChecked();
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() =>
+      expect(spy).toHaveBeenCalledWith("token", { ai_categorization_enabled: true })
+    );
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(checkbox).toBeChecked();
+
+    // Independent of the AI-assistant checkbox - unaffected by this save.
+    expect(
+      screen.getByRole("checkbox", { name: "Allow the AI assistant to access my financial data" })
+    ).toBeChecked();
+  });
+
+  it("reverts the AI-categorization checkbox and shows an error if saving fails", async () => {
+    vi.spyOn(settingsLib, "updateSettings").mockRejectedValue(
+      new ApiError(422, {
+        code: "validation_error",
+        message: "Failed to save AI categorization setting.",
+        field_errors: null,
+      })
+    );
+
+    render(<PreferencesSection accessToken="token" settings={BASE_SETTINGS} />);
+    const checkbox = screen.getByRole("checkbox", {
+      name: "Let AI suggest categories for synced transactions",
+    });
+
+    fireEvent.click(checkbox);
+
+    expect(
+      await screen.findByText("Failed to save AI categorization setting.")
+    ).toBeInTheDocument();
+    await waitFor(() => expect(checkbox).not.toBeChecked());
   });
 });

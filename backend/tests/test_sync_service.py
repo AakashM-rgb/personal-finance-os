@@ -369,6 +369,284 @@ async def test_trigger_sync_weak_keyword_match_is_low_confidence_needs_review(
     assert synced["needs_review"] is True
 
 
+async def test_ai_categorization_gate_defaults_to_false(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+) -> None:
+    """UserSettings.ai_categorization_enabled defaults to False - a brand
+    new user is opted out of background AI categorization until they
+    explicitly turn it on (see app.models.user_settings)."""
+    user_id = await _get_user_id(client, auth_headers)
+    allowed = await sync_service._ai_categorization_enabled_for_user(db_session, user_id=user_id)
+    assert allowed is False
+
+
+async def test_ai_categorization_gate_true_after_user_opts_in(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+) -> None:
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+
+    allowed = await sync_service._ai_categorization_enabled_for_user(db_session, user_id=user_id)
+    assert allowed is True
+
+
+async def test_ai_categorization_gate_is_isolated_per_user(
+    client: AsyncClient,
+    auth_headers: dict,
+    other_auth_headers: dict,
+    db_session: AsyncSession,
+) -> None:
+    user_id = await _get_user_id(client, auth_headers)
+    other_user_id = await _get_user_id(client, other_auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+
+    assert (
+        await sync_service._ai_categorization_enabled_for_user(db_session, user_id=user_id)
+    ) is True
+    # The second user never opted in - their own gate must stay closed
+    # regardless of the first user's setting.
+    assert (
+        await sync_service._ai_categorization_enabled_for_user(db_session, user_id=other_user_id)
+    ) is False
+
+
+async def test_categorize_reaches_ai_gate_only_after_tiers_1_to_3_miss(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The opt-in gate (_ai_categorization_enabled_for_user) is the seam a
+    future AI classifier tier will be called behind - it must only be
+    reached once USER_RULE, MERCHANT_MAP, and KEYWORD have all missed."""
+    user_id = await _get_user_id(client, auth_headers)
+    gate_calls: list[uuid.UUID] = []
+    original_gate = sync_service._ai_categorization_enabled_for_user
+
+    async def _spy_gate(db: AsyncSession, *, user_id: uuid.UUID) -> bool:
+        gate_calls.append(user_id)
+        return await original_gate(db, user_id=user_id)
+
+    monkeypatch.setattr(sync_service, "_ai_categorization_enabled_for_user", _spy_gate)
+
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                external_transaction_id="ext-gate-reached",
+                narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase",
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert gate_calls == [user_id]  # reached exactly once, after every deterministic tier missed
+
+
+async def test_categorize_skips_ai_gate_when_user_rule_matches(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _get_user_id(client, auth_headers)
+    education_id = await _get_category_id(client, auth_headers, "Education")
+    await merchant_rule_service.upsert_rule(
+        db_session, user_id=user_id, raw_merchant="ABC EDUCATION", category_id=education_id
+    )
+    await db_session.commit()
+
+    gate_calls: list[uuid.UUID] = []
+
+    async def _spy_gate(db: AsyncSession, *, user_id: uuid.UUID) -> bool:
+        gate_calls.append(user_id)
+        return False
+
+    monkeypatch.setattr(sync_service, "_ai_categorization_enabled_for_user", _spy_gate)
+
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                external_transaction_id="ext-user-rule-hit",
+                narration="UPI/DR/500/ABC EDUCATION PVT LTD/edu@icici/Fee Payment",
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert gate_calls == []  # Tier 1 (USER_RULE) hit - the AI gate is never even checked
+
+
+async def test_categorize_skips_ai_gate_when_merchant_map_matches(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _get_user_id(client, auth_headers)
+    gate_calls: list[uuid.UUID] = []
+
+    async def _spy_gate(db: AsyncSession, *, user_id: uuid.UUID) -> bool:
+        gate_calls.append(user_id)
+        return False
+
+    monkeypatch.setattr(sync_service, "_ai_categorization_enabled_for_user", _spy_gate)
+
+    fake = _FakeSyncProvider(transactions=[_ext_txn(narration="UPI/DR/399/SWIGGY/paytm@ybl/Order")])
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert gate_calls == []  # Tier 2 (MERCHANT_MAP) hit - the AI gate is never even checked
+
+
+async def test_categorize_skips_ai_gate_when_keyword_matches(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _get_user_id(client, auth_headers)
+    gate_calls: list[uuid.UUID] = []
+
+    async def _spy_gate(db: AsyncSession, *, user_id: uuid.UUID) -> bool:
+        gate_calls.append(user_id)
+        return False
+
+    monkeypatch.setattr(sync_service, "_ai_categorization_enabled_for_user", _spy_gate)
+
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                external_transaction_id="ext-keyword-hit",
+                narration="NEFT/DR/N999999999999/CORNER RESTAURANT PAYMENT",
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    assert gate_calls == []  # Tier 3 (KEYWORD) hit - the AI gate is never even checked
+
+
+async def test_disabled_user_unknown_merchant_behavior_is_unchanged(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No AI classifier exists yet (Phase F). With ai_categorization_enabled
+    left at its default False, an unknown merchant must behave exactly as
+    it does today: Uncategorized + needs_review=True, never guessed at and
+    never routed to any AI call."""
+    user_id = await _get_user_id(client, auth_headers)
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                external_transaction_id="ext-disabled-gate",
+                narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase",
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] is None
+    assert synced["needs_review"] is True
+
+
+async def test_enabled_user_unknown_merchant_behavior_is_unchanged_pending_classifier(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opting in to ai_categorization_enabled must NOT change today's
+    outcome, since no AI classifier is implemented yet - the setting only
+    prepares the gate a future classifier tier will run behind. An unknown
+    merchant still ends up Uncategorized + needs_review=True."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+
+    fake = _FakeSyncProvider(
+        transactions=[
+            _ext_txn(
+                external_transaction_id="ext-enabled-gate",
+                narration="UPI/DR/700/SOME RANDOM LOCAL SHOP/xyz@upi/Purchase",
+            )
+        ]
+    )
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] is None
+    assert synced["needs_review"] is True
+
+
+async def test_enabled_user_known_merchant_still_auto_posts_via_merchant_map(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: enabling ai_categorization_enabled must not disturb the
+    existing deterministic tiers - a recognized merchant still auto-posts
+    via MERCHANT_MAP exactly as before."""
+    user_id = await _get_user_id(client, auth_headers)
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+
+    fake = _FakeSyncProvider(transactions=[_ext_txn(narration="UPI/DR/399/SWIGGY/paytm@ybl/Order")])
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+    await db_session.commit()
+
+    categories = await client.get("/api/v1/categories", headers=auth_headers)
+    food_id = next(c["id"] for c in categories.json()["data"] if c["name"] == "Food")
+
+    transactions = await client.get("/api/v1/transactions?limit=50", headers=auth_headers)
+    synced = next(
+        t for t in transactions.json()["data"] if t["linked_account_id"] == str(linked.id)
+    )
+    assert synced["category_id"] == food_id
+    assert synced["needs_review"] is False
+
+
 async def test_trigger_sync_preserves_raw_narration_as_description(
     client: AsyncClient,
     auth_headers: dict,

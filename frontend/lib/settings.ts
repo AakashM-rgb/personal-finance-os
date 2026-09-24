@@ -17,6 +17,7 @@ export interface UserSettings {
   currency: string;
   theme: ThemePreference;
   ai_enabled: boolean;
+  ai_categorization_enabled: boolean;
   notification_preferences: NotificationPreferences;
 }
 
@@ -24,6 +25,7 @@ export interface UserSettingsUpdateInput {
   currency?: string;
   theme?: ThemePreference;
   ai_enabled?: boolean;
+  ai_categorization_enabled?: boolean;
   notification_preferences?: Partial<NotificationPreferences>;
 }
 

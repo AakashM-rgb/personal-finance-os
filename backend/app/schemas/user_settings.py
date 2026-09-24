@@ -31,6 +31,7 @@ class UserSettingsRead(BaseModel):
     currency: str
     theme: str
     ai_enabled: bool
+    ai_categorization_enabled: bool
     notification_preferences: NotificationPreferences
 
     @field_validator("notification_preferences", mode="before")
@@ -48,6 +49,7 @@ class UserSettingsUpdate(BaseModel):
     currency: str | None = None
     theme: str | None = None
     ai_enabled: bool | None = None
+    ai_categorization_enabled: bool | None = None
     # A partial patch: only the categories present are changed, exactly
     # like every other field on this schema - see
     # app.services.user_settings_service.update_settings.

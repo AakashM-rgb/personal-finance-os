@@ -23,6 +23,7 @@ async def test_get_settings_returns_defaults_for_a_new_user(
         "currency": "INR",
         "theme": "system",
         "ai_enabled": True,
+        "ai_categorization_enabled": False,
         "notification_preferences": DEFAULT_NOTIFICATION_PREFERENCES,
     }
 
@@ -100,6 +101,76 @@ async def test_disabling_ai_actually_blocks_the_assistant(
     assert "turned off" in body["answer"].lower()
 
 
+async def test_ai_categorization_enabled_defaults_to_false(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    response = await client.get("/api/v1/settings", headers=auth_headers)
+    assert response.json()["data"]["ai_categorization_enabled"] is False
+
+
+async def test_patch_settings_enables_ai_categorization(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    response = await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["ai_categorization_enabled"] is True
+
+    get_response = await client.get("/api/v1/settings", headers=auth_headers)
+    assert get_response.json()["data"]["ai_categorization_enabled"] is True
+
+
+async def test_patch_settings_disables_ai_categorization_again(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    response = await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": False}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["ai_categorization_enabled"] is False
+
+    get_response = await client.get("/api/v1/settings", headers=auth_headers)
+    assert get_response.json()["data"]["ai_categorization_enabled"] is False
+
+
+async def test_ai_categorization_enabled_is_independent_of_ai_enabled(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """The two AI settings must never move together - one PATCH only ever
+    changes the field it names (see app.services.user_settings_service)."""
+    response = await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_enabled": False}
+    )
+    assert response.json()["data"]["ai_enabled"] is False
+    assert response.json()["data"]["ai_categorization_enabled"] is False
+
+    response = await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+    assert response.json()["data"]["ai_categorization_enabled"] is True
+    # ai_enabled must remain untouched by the ai_categorization_enabled patch.
+    assert response.json()["data"]["ai_enabled"] is False
+
+
+async def test_ai_categorization_enabled_is_isolated_per_user(
+    client: AsyncClient, auth_headers: dict, other_auth_headers: dict
+) -> None:
+    await client.patch(
+        "/api/v1/settings", headers=auth_headers, json={"ai_categorization_enabled": True}
+    )
+
+    own_response = await client.get("/api/v1/settings", headers=auth_headers)
+    other_response = await client.get("/api/v1/settings", headers=other_auth_headers)
+
+    assert own_response.json()["data"]["ai_categorization_enabled"] is True
+    # The second user's own setting must be untouched by the first user's change.
+    assert other_response.json()["data"]["ai_categorization_enabled"] is False
+
+
 async def test_patch_settings_rejects_unknown_field(
     client: AsyncClient, auth_headers: dict
 ) -> None:
@@ -121,6 +192,7 @@ async def test_patch_settings_partial_update_leaves_other_fields_untouched(
         "currency": "EUR",
         "theme": "light",
         "ai_enabled": True,
+        "ai_categorization_enabled": False,
         "notification_preferences": DEFAULT_NOTIFICATION_PREFERENCES,
     }
 

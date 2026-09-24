@@ -2,9 +2,13 @@
 apply partial updates. `ai_enabled` changes take effect immediately - the AI
 tool layer (app.services.ai_assistant_service) re-reads this same row on
 every request rather than caching it, so there is no separate place that
-also needs to be told the setting changed. `notification_preferences`
-changes are read the same way, by app.services.notification_service on its
-next generation pass - there is no cache to invalidate there either."""
+also needs to be told the setting changed. `ai_categorization_enabled` is
+read the same way by app.services.sync_service on every sync run - a
+separate, independent opt-in for background AI-assisted categorization,
+never conflated with `ai_enabled` (which only governs the conversational
+assistant). `notification_preferences` changes are read the same way, by
+app.services.notification_service on its next generation pass - there is no
+cache to invalidate there either."""
 
 import uuid
 
@@ -38,6 +42,8 @@ async def update_settings(
         settings.theme = data.theme
     if data.ai_enabled is not None:
         settings.ai_enabled = data.ai_enabled
+    if data.ai_categorization_enabled is not None:
+        settings.ai_categorization_enabled = data.ai_categorization_enabled
     if data.notification_preferences is not None:
         # Merged, not replaced - {"budget_warnings": false} only touches
         # that one category, leaving every other stored preference as-is.

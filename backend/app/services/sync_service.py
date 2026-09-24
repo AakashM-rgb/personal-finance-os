@@ -346,6 +346,23 @@ async def _resolve_user_rule_category(
     )
 
 
+async def _ai_categorization_enabled_for_user(db: AsyncSession, *, user_id: uuid.UUID) -> bool:
+    """Whether the authenticated user has explicitly opted in to background
+    AI-assisted categorization (UserSettings.ai_categorization_enabled) -
+    a SEPARATE setting from `ai_enabled`, which only governs the
+    conversational assistant/NL search. Read fresh from the database on
+    every call, never cached, so a user who just disabled it is excluded
+    from their very next sync run. Defaults to False (server_default), so
+    an unconfigured or newly-registered user is opted out until they
+    explicitly turn this on - even when an AI provider is otherwise
+    configured (app.core.config.anthropic_api_key). This is the gate a
+    future AI classifier tier must be called behind (see _categorize) -
+    it must never be invoked and then have its result discarded when this
+    returns False."""
+    settings = await UserSettingsRepository(db).get_by_user_id(user_id)
+    return settings is not None and settings.ai_categorization_enabled
+
+
 async def _categorize(
     db: AsyncSession,
     *,
@@ -357,12 +374,13 @@ async def _categorize(
     """The categorization priority order: a user-defined rule (see
     _resolve_user_rule_category / app.services.merchant_rule_service), then
     a known-merchant mapping, then a generic keyword match, then
-    Uncategorized. An AI-classifier tier is deliberately not implemented:
-    app.ai.provider is
-    a conversational tool-calling abstraction, not a one-shot deterministic
-    classifier, and reusing it here would mean a non-deterministic,
-    unnecessary external call for a decision this module can already make
-    safely without one."""
+    Uncategorized. An AI-classifier tier is NOT implemented yet - only the
+    opt-in gate it will run behind is (_ai_categorization_enabled_for_user).
+    When that tier is added it must be attempted only after tiers 1-3 all
+    miss, and only when the gate returns True: app.ai.provider is a
+    conversational tool-calling abstraction, not a one-shot deterministic
+    classifier, so it needs (and will get) its own narrow classifier
+    interface rather than reusing that one."""
     user_rule_category_id = await _resolve_user_rule_category(
         db, user_id=user_id, canonical_merchant=normalized.canonical_name
     )
@@ -381,6 +399,14 @@ async def _categorize(
     )
     if keyword_category_name is not None:
         return category_id_by_name[keyword_category_name], CategorizationTier.KEYWORD
+
+    # Tier 4 (future AI classifier, not yet implemented): only even
+    # eligible once tiers 1-3 have all missed, and only for a user who has
+    # explicitly opted in. No classifier exists yet, so `ai_categorization_allowed`
+    # is unused beyond this gate check - it never invokes an AI provider,
+    # and there is nothing here to invoke-then-discard.
+    ai_categorization_allowed = await _ai_categorization_enabled_for_user(db, user_id=user_id)
+    del ai_categorization_allowed  # Phase F: branch on this to call the classifier
 
     return None, CategorizationTier.NONE
 
