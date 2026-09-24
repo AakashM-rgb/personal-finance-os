@@ -80,6 +80,7 @@ class _FakeSyncProvider:
     external_account_id: str = _FAKE_EXTERNAL_ACCOUNT_ID
     masked_account_ref: str = "XX9999"
     consent_status: str = "active"
+    consent_expires_at: datetime | None = datetime(2027, 1, 1, tzinfo=UTC)
     transactions: list[ExternalTransaction] = field(default_factory=list)
     list_transactions_error: Exception | None = None
     revoke_calls: list[str] = field(default_factory=list)
@@ -98,7 +99,7 @@ class _FakeSyncProvider:
         return LinkCompletion(
             consent_id=f"fake-consent-{consent_handle}",
             consent_status=self.consent_status,
-            consent_expires_at=datetime(2027, 1, 1, tzinfo=UTC),
+            consent_expires_at=self.consent_expires_at,
             accounts=(
                 LinkedInstitutionAccount(
                     external_account_id=self.external_account_id,
@@ -236,6 +237,44 @@ async def test_revoke_link_marks_consent_revoked_and_blocks_further_sync(
 
     with pytest.raises(ValidationAppError):
         await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+
+
+async def test_trigger_sync_rejects_an_expired_consent(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase F6: consent_expires_at is checked independently of
+    consent_status - a link whose provider-reported status is still
+    "active" but whose expiry timestamp has already passed must be
+    rejected the same way a revoked consent is, never silently synced
+    against stale/expired authorization."""
+    user_id = await _get_user_id(client, auth_headers)
+    fake = _FakeSyncProvider(consent_expires_at=datetime(2020, 1, 1, tzinfo=UTC))
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    with pytest.raises(ValidationAppError):
+        await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+
+
+async def test_trigger_sync_allows_a_consent_with_no_expiry_information(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider that reports no expiry at all (consent_expires_at=None)
+    must never be treated as expired - only an actual past timestamp is."""
+    user_id = await _get_user_id(client, auth_headers)
+    fake = _FakeSyncProvider(consent_expires_at=None)
+    monkeypatch.setattr(sync_service, "get_sync_provider", lambda: fake)
+    linked = await _link(db_session, user_id=user_id)
+
+    run = await sync_service.trigger_sync(db_session, user_id=user_id, linked_account_id=linked.id)
+
+    assert run.status.value == "success"
 
 
 async def test_user_cannot_access_another_users_linked_account(

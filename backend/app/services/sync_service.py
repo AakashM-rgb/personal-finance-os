@@ -691,6 +691,20 @@ async def trigger_sync(
             "This linked account's consent is not active.",
             field_errors={"linked_account_id": "consent not active"},
         )
+    # Checked independently of consent_status (Phase F6): a provider's
+    # own consent_status field can lag reality - nothing here relies on
+    # a background job to flip an expired consent to
+    # SyncConsentStatus.EXPIRED before this catches it. `None` means the
+    # provider gave no expiry information at all, which is never treated
+    # as "expired" - only an actual past timestamp is.
+    if (
+        linked_account.consent_expires_at is not None
+        and linked_account.consent_expires_at <= datetime.now(UTC)
+    ):
+        raise ValidationAppError(
+            "This linked account's consent has expired.",
+            field_errors={"linked_account_id": "consent expired"},
+        )
     account_id = linked_account.account_id
 
     provider = get_sync_provider()
