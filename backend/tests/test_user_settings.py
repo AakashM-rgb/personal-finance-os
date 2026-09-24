@@ -171,6 +171,29 @@ async def test_ai_categorization_enabled_is_isolated_per_user(
     assert other_response.json()["data"]["ai_categorization_enabled"] is False
 
 
+async def test_settings_response_never_exposes_an_anthropic_api_key(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """Phase F4 (Test Area 13): the AI categorization toggle is a plain
+    boolean - the server-side ANTHROPIC_API_KEY (app.core.config) must
+    never appear on this or any other user-facing response, in any field
+    name or value."""
+    response = await client.get("/api/v1/settings", headers=auth_headers)
+    data = response.json()["data"]
+
+    assert set(data) == {
+        "currency",
+        "theme",
+        "ai_enabled",
+        "ai_categorization_enabled",
+        "notification_preferences",
+    }
+    for key in data:
+        assert "key" not in key.lower()
+        assert "secret" not in key.lower()
+        assert "anthropic" not in key.lower()
+
+
 async def test_patch_settings_rejects_unknown_field(
     client: AsyncClient, auth_headers: dict
 ) -> None:

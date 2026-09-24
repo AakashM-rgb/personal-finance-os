@@ -69,11 +69,20 @@ class MerchantClassificationResult(BaseModel):
     Never construct this directly with a caller-supplied `category_name` -
     use `validate_classification` below, which is the single place that
     name is checked against the caller's own allow-list.
+
+    `category_name` defaults to None - a real implementation (see
+    app.ai.classifier.anthropic's system prompt and tool schema) is
+    deliberately instructed to OMIT this key entirely when no supplied
+    category fits, rather than send an explicit null; without this
+    default, parsing that well-formed "no match" response would fail
+    Pydantic's required-field check and be misrouted through the
+    generic error-handling path instead of being accepted cleanly as
+    the equivalent, valid "no classification" result it actually is.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    category_name: str | None
+    category_name: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
 
 

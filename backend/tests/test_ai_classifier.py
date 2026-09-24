@@ -8,7 +8,9 @@ verified.
 
 import ast
 import asyncio
+import importlib.util
 import inspect
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,6 +134,43 @@ def test_validate_classification_treats_none_category_as_empty() -> None:
     assert result.confidence == 0.0
 
 
+def test_validate_classification_rejects_a_category_not_in_the_spec_example_allow_list() -> None:
+    """The exact scenario named in the Phase F4 spec: a user has Food,
+    Shopping, Transport - the AI returns "Travel", outside that list."""
+    result = validate_classification(
+        category_name="Travel", confidence=0.8, category_names=("Food", "Shopping", "Transport")
+    )
+    assert result.category_name is None
+    assert result.confidence == 0.0
+
+
+def test_validate_classification_is_case_sensitive() -> None:
+    """"food" must never match "Food" - only an EXACT match is ever
+    accepted, never a case-insensitive or fuzzy one, so a classifier can
+    never post to a category by approximate spelling."""
+    result = validate_classification(
+        category_name="food", confidence=0.9, category_names=("Food",)
+    )
+    assert result.category_name is None
+    assert result.confidence == 0.0
+
+
+def test_validate_classification_rejects_whitespace_variation() -> None:
+    result = validate_classification(
+        category_name="Food ", confidence=0.9, category_names=("Food",)
+    )
+    assert result.category_name is None
+    assert result.confidence == 0.0
+
+
+def test_validate_classification_rejects_an_empty_string_category() -> None:
+    result = validate_classification(
+        category_name="", confidence=0.9, category_names=("Food",)
+    )
+    assert result.category_name is None
+    assert result.confidence == 0.0
+
+
 # --- strict model validation --------------------------------------------------------------
 
 
@@ -178,6 +217,23 @@ def test_classification_request_rejects_an_empty_merchant_name() -> None:
         MerchantClassificationRequest(merchant="", category_names=("Food",))
 
 
+def test_classification_result_category_name_defaults_to_none_when_omitted() -> None:
+    """Phase F4 regression: category_name must be genuinely OPTIONAL, not
+    just nullable - a real classifier (see app.ai.classifier.anthropic's
+    system prompt and tool schema) is deliberately instructed to OMIT this
+    key entirely when no category fits, rather than send an explicit null.
+    Before this default existed, parsing that well-formed response raised
+    a ValidationError (Pydantic treats `str | None` with no default as
+    REQUIRED) and was only saved by the outer catch-all - functionally
+    safe, but for the wrong reason, and it spammed a warning log for a
+    perfectly normal "no match" response. `model_validate` on a dict
+    missing the key entirely must succeed cleanly."""
+    result = MerchantClassificationResult.model_validate({"confidence": 0.7})
+    assert result.category_name is None
+    assert result.confidence == 0.7
+    assert result == MerchantClassificationResult(category_name=None, confidence=0.7)
+
+
 @pytest.mark.parametrize(
     "forbidden_field",
     [
@@ -193,6 +249,12 @@ def test_classification_request_rejects_an_empty_merchant_name() -> None:
         "consent_handle",
         "provider_secret",
         "api_key",
+        "email",
+        "phone",
+        "address",
+        "narration",
+        "linked_account_id",
+        "external_transaction_id",
         "tool_call",
         "action",
     ],
@@ -501,6 +563,32 @@ async def test_anthropic_classifier_returns_validated_result_for_a_valid_respons
     assert result.confidence == 0.91
 
 
+async def test_anthropic_classifier_handles_omitted_category_name_cleanly(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Phase F4 regression for the same bug as
+    test_classification_result_category_name_defaults_to_none_when_omitted,
+    exercised through the real classify() path: the system prompt and tool
+    schema (see app.ai.classifier.anthropic) explicitly instruct the model
+    to OMIT category_name when nothing fits - that must be accepted as a
+    normal, valid "no classification" result, not silently rescued by the
+    generic failure-handling path. Asserted via caplog: no
+    ai_classifier_request_failed warning should be logged for a
+    well-formed response, only for a genuine failure."""
+    fake_client = _FakeAnthropicClient(response=_tool_response(confidence=0.42))
+    classifier = AnthropicMerchantClassifier(
+        api_key="fake-key-for-test", model="claude-sonnet-5", client=fake_client
+    )
+    request = MerchantClassificationRequest(merchant="Weird Store", category_names=("Food",))
+
+    with caplog.at_level(logging.WARNING, logger="app.ai.classifier"):
+        result = await classifier.classify(request)
+
+    assert result.category_name is None
+    assert result.confidence == 0.0  # validate_classification's own empty-result confidence
+    assert caplog.records == []  # a clean "no match" - never logged as a failure
+
+
 # 5. invalid category is converted to category_name=None, confidence=0.0
 
 
@@ -610,6 +698,31 @@ async def test_anthropic_classifier_makes_no_call_with_an_empty_api_key() -> Non
     classifier = AnthropicMerchantClassifier(
         api_key="", model="claude-sonnet-5", client=_ExplodingClient()
     )
+    request = MerchantClassificationRequest(merchant="Swiggy", category_names=("Food",))
+
+    result = await classifier.classify(request)
+
+    assert result.category_name is None
+    assert result.confidence == 0.0
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("anthropic") is not None,
+    reason=(
+        "only meaningful when the optional 'anthropic' package is absent - with it "
+        "installed, the real lazy-import path would instead attempt a genuine network "
+        "call, which this suite must never do"
+    ),
+)
+async def test_anthropic_classifier_fails_safe_when_the_real_sdk_is_not_installed() -> None:
+    """Exercises the REAL lazy-import path (no injected `client`) - proves
+    classify() fails safe on an actual ImportError, not just a simulated
+    one, whenever the optional 'anthropic' dependency genuinely isn't
+    installed. Omitting `client` forces `_get_client()` to attempt
+    `import anthropic` for real - guarded by the skipif above so this can
+    never turn into a real network call in an environment where the SDK
+    happens to be installed."""
+    classifier = AnthropicMerchantClassifier(api_key="fake-key-for-test", model="claude-sonnet-5")
     request = MerchantClassificationRequest(merchant="Swiggy", category_names=("Food",))
 
     result = await classifier.classify(request)
