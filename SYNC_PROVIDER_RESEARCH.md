@@ -250,6 +250,51 @@ change today (§6 of the phase task, confirmed in the final report).
 
 ---
 
+## Addendum (Phase F11, 2026-09-24) — deep dive into Setu's live API reference
+
+F10 found this document's original research (Phase F7) insufficient to implement against: it was
+built from Setu's public marketing/landing pages, which described only the *conceptual* AA flow
+shape, never concrete endpoints, schemas, or auth mechanics. Phase F11 went back to Setu's own
+**live, current `docs.setu.co` API reference pages** (not landing pages, not third-party blogs, not
+search snippets) specifically to try to close that gap. It found substantially more concrete
+detail than F7 did — full details, with per-item source attribution and honest confidence/ambiguity
+notes, are in `SYNC_PROVIDER_READINESS.md` (which this addendum defers to as the authoritative,
+structured record). Summary:
+
+- **Newly confirmed with reasonable confidence** (cross-referenced across 2+ independent official
+  page fetches each): the AA Gateway sandbox/production resource base URLs
+  (`fiu-sandbox.setu.co` / `fiu.setu.co`), the consent-creation/status/revocation endpoints and
+  schemas, the data-session (transaction fetch) creation/polling endpoints and schemas, the
+  error-response shape, the webhook event types and payload shape, and the date-range parameter
+  format.
+- **A valuable correction to F7's own vague mapping guess**: `BankSyncProvider.list_linked_institution_accounts(consent_id)`
+  most likely corresponds to the `accountsLinked` field already present on Setu's `GET
+  /consents/:id?expanded=true` response — **not** a separate "account availability" endpoint (which
+  takes a phone number, not a `consent_id`, and appears to serve a different, pre-consent
+  discovery purpose). This is engineering interpretation from cross-referencing two pages against
+  our own existing method signature, not a direct documentation quote.
+- **Still NOT resolved, and now the single most consequential remaining gap**: Setu's Account
+  Aggregator product's own authentication mechanism specifically. A dedicated Setu Bridge OAuth
+  page documents a token-exchange flow (`POST /api/v2/auth/token` on `uat.setu.co`/`prod.setu.co`,
+  yielding a bearer token) - but that page itself states this mechanism is **product-specific, not
+  universal**, and does not confirm it applies to the AA Gateway product. The AA-specific pages
+  consistently reference only `Authorization: Bearer <token>` without ever showing where that
+  token actually comes from for *this* product, and a separate quickstart page instead describes
+  static `x-client_id`/`x-client-secret`/`x-product-instance-id` values obtained from Setu Bridge.
+  Since authentication is a prerequisite for every single operation, this ambiguity alone keeps the
+  documentation gap open - see `SYNC_PROVIDER_READINESS.md` for the full reasoning and why this
+  was not resolved by picking one interpretation.
+- Webhook signature/authenticity verification, pagination behavior for large result sets, and rate
+  limits remain undocumented in everything retrieved in both F7 and F11.
+
+**Methodological caveat, stated plainly**: this research (both F7 and this addendum) was gathered
+via automated web search/fetch tooling, which itself uses an AI model to summarize fetched page
+content - it is not a human directly reading rendered HTML. Findings that were cross-referenced
+across multiple independent page fetches (noted above) carry higher confidence; single-source
+findings carry lower confidence. Nothing here should be treated as a substitute for a human
+developer directly reading Setu's live documentation (ideally alongside authenticated Setu Bridge
+dashboard access) before writing any real implementation code.
+
 ## Sources
 
 - [Account Aggregator Framework: India's Consent-Based Data Sharing System (2026 Guide) — HyperVerge](https://hyperverge.co/blog/account-aggregator-framework-rbi/)
@@ -277,6 +322,19 @@ change today (§6 of the phase task, confirmed in the final report).
 - [Pick the Right Account Aggregator: An FIU Selection Guide — HyperVerge](https://hyperverge.co/blog/best-account-aggregators/)
 - [Finvu vs Anumati vs OneMoney: AA Comparison — Fintegration](https://www.fintegrationfs.com/post/a-comparative-analysis-of-finvu-anumati-and-onemoney-in-india-s-aa-landscape)
 
+**Phase F11 additions** (Setu's live API reference, fetched directly, 2026-09-24):
+
+- [Account Aggregator API reference — Setu Docs](https://docs.setu.co/data/account-aggregator/api-reference)
+- [AA Gateway API Integration — Setu Docs](https://docs.setu.co/data/account-aggregator/api-integration)
+- [Consent flow — Setu Docs](https://docs.setu.co/data/account-aggregator/api-integration/consent-flow)
+- [Data APIs (FI data fetch) — Setu Docs](https://docs.setu.co/data/account-aggregator/api-integration/data-apis)
+- [Consent Object — Setu Docs](https://docs.setu.co/data/account-aggregator/consent-object)
+- [Account Availability APIs — Setu Docs](https://docs.setu.co/data/account-aggregator/api-integration/account-availability-apis)
+- [FIP APIs — Setu Docs](https://docs.setu.co/data/account-aggregator/api-integration/fip-apis)
+- [Notifications (webhooks) — Setu Docs](https://docs.setu.co/data/account-aggregator/api-integration/notifications)
+- [Account Aggregator overview — Setu Docs](https://docs.setu.co/data/account-aggregator/overview)
+- [Setu Bridge OAuth — Setu Docs](https://docs.setu.co/dev-tools/bridge/v1/org-settings/api-keys/oauth)
+
 All sources were accessed via public web search/fetch on 2026-09-24. No account was created, no
 credential was obtained, and no sandbox or production API was called while producing this
-document.
+document, in Phase F7 or in the Phase F11 addendum.
