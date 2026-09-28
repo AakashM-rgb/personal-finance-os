@@ -41,6 +41,7 @@ def set_session_cookies(response: Response, *, raw_refresh_token: str) -> None:
         value=raw_refresh_token,
         max_age=max_age,
         path=_REFRESH_COOKIE_PATH,
+        domain=settings.cookie_domain,
         httponly=True,
         secure=settings.is_production,
         samesite="lax",
@@ -50,6 +51,7 @@ def set_session_cookies(response: Response, *, raw_refresh_token: str) -> None:
         value=secrets.token_urlsafe(32),
         max_age=max_age,
         path=_CSRF_COOKIE_PATH,
+        domain=settings.cookie_domain,
         httponly=False,
         secure=settings.is_production,
         samesite="lax",
@@ -57,5 +59,10 @@ def set_session_cookies(response: Response, *, raw_refresh_token: str) -> None:
 
 
 def clear_session_cookies(response: Response) -> None:
-    response.delete_cookie(key=REFRESH_COOKIE_NAME, path=_REFRESH_COOKIE_PATH)
-    response.delete_cookie(key=CSRF_COOKIE_NAME, path=_CSRF_COOKIE_PATH)
+    # A cookie is only cleared when the domain matches the one it was set with.
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME, path=_REFRESH_COOKIE_PATH, domain=settings.cookie_domain
+    )
+    response.delete_cookie(
+        key=CSRF_COOKIE_NAME, path=_CSRF_COOKIE_PATH, domain=settings.cookie_domain
+    )

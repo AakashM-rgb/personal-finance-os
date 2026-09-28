@@ -25,6 +25,14 @@ class Settings(BaseSettings):
 
     cors_origins: str = Field(alias="CORS_ORIGINS")
 
+    # Unset (the default): the refresh and CSRF cookies are host-only, which
+    # is correct when the frontend and API share a hostname (local dev:
+    # localhost:3000 and localhost:8000). A deployment serving them from
+    # sibling subdomains (app.example.com / api.example.com) sets this to the
+    # shared parent domain, because the frontend's JavaScript must be able to
+    # read the CSRF cookie to restore a session (see app.auth.cookies).
+    cookie_domain: str | None = Field(default=None, alias="COOKIE_DOMAIN")
+
     login_rate_limit: str = Field(alias="LOGIN_RATE_LIMIT")
     register_rate_limit: str = Field(alias="REGISTER_RATE_LIMIT")
     # /refresh and /logout are cookie-authenticated (never brute-forceable -

@@ -100,10 +100,11 @@ Architectural invariants established during design (do not silently change these
 
 ```
 finance-app/
-├── CLAUDE.md  README.md  API.md  SECURITY.md  AI.md  DEPLOYMENT.md
+├── CLAUDE.md  README.md  API.md  SECURITY.md  AI.md
 ├── docs/
 │   ├── ARCHITECTURE.md
-│   └── DATABASE.md
+│   ├── DATABASE.md
+│   └── DEPLOYMENT.md
 ├── docker-compose.yml
 ├── .env.example
 ├── frontend/

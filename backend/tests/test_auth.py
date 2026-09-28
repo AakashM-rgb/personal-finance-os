@@ -1,7 +1,10 @@
+import pytest
+from fastapi import Response
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import cookies
 from app.models.audit_log import AuditLog
 
 
@@ -49,6 +52,48 @@ async def test_csrf_cookie_is_readable_from_every_frontend_route(
 
     refresh_header = next(h for h in set_cookie_headers if h.startswith("refresh_token="))
     assert cookie_path(refresh_header) == "/api/v1/auth"
+
+
+def _cookie_domains(set_cookie_headers: list[str]) -> dict[str, str | None]:
+    domains: dict[str, str | None] = {}
+    for header in set_cookie_headers:
+        name = header.split("=", 1)[0]
+        domains[name] = None
+        for part in header.split(";")[1:]:
+            key, _, value = part.strip().partition("=")
+            if key.lower() == "domain":
+                domains[name] = value
+    return domains
+
+
+async def test_session_cookies_are_host_only_when_cookie_domain_is_unset(
+    client: AsyncClient, register_payload: dict
+) -> None:
+    """The default (local dev, or a single-hostname deployment) must keep
+    both cookies host-only - no Domain attribute at all."""
+    response = await client.post("/api/v1/auth/register", json=register_payload)
+    assert response.status_code == 200
+    domains = _cookie_domains(response.headers.get_list("set-cookie"))
+    assert domains == {"refresh_token": None, "csrf_token": None}
+
+
+def test_cookie_domain_applies_to_setting_and_clearing_session_cookies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A split-subdomain deployment (app.example.com / api.example.com) sets
+    COOKIE_DOMAIN so the frontend can read the CSRF cookie. Clearing must use
+    the same domain, or logout would leave the cookies in the browser."""
+    monkeypatch.setattr(cookies.settings, "cookie_domain", "example.com")
+
+    set_response = Response()
+    cookies.set_session_cookies(set_response, raw_refresh_token="not-a-real-token")
+    set_domains = _cookie_domains(set_response.headers.getlist("set-cookie"))
+    assert set_domains == {"refresh_token": "example.com", "csrf_token": "example.com"}
+
+    clear_response = Response()
+    cookies.clear_session_cookies(clear_response)
+    clear_domains = _cookie_domains(clear_response.headers.getlist("set-cookie"))
+    assert clear_domains == {"refresh_token": "example.com", "csrf_token": "example.com"}
 
 
 async def test_register_rejects_duplicate_email(

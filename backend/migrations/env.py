@@ -25,7 +25,10 @@ target_metadata = Base.metadata
 # never hardcoded here. ALEMBIC_DATABASE_URL lets `pytest`/CI point migrations
 # at the test database without duplicating this file.
 database_url = os.environ.get("ALEMBIC_DATABASE_URL") or get_settings().database_url
-config.set_main_option("sqlalchemy.url", database_url)
+# Alembic's config is a ConfigParser, which treats "%" as interpolation syntax.
+# Managed-database passwords are often percent-encoded (e.g. "%40"), so "%" is
+# escaped here; get_main_option/get_section return the original URL unchanged.
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:
