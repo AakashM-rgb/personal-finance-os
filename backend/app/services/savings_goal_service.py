@@ -22,6 +22,9 @@ from app.services.savings_goal_calculations import (
 
 
 def _to_read(goal: SavingsGoal) -> SavingsGoalRead:
+    # "Today" is the UTC date, the same convention as app.services.month_bounds.
+    # Near midnight IST, days_remaining can be one day different from the
+    # user's local calendar.
     today = datetime.now(UTC).date()
     remaining_minor = calculate_remaining_minor(goal.current_amount_minor, goal.target_amount_minor)
     days_remaining = calculate_days_remaining(goal.target_date, today)

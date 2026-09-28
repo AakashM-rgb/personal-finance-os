@@ -100,7 +100,10 @@ Architectural invariants established during design (do not silently change these
 
 ```
 finance-app/
-├── CLAUDE.md  README.md  ARCHITECTURE.md  API.md  DATABASE.md  SECURITY.md  AI.md  DEPLOYMENT.md
+├── CLAUDE.md  README.md  API.md  SECURITY.md  AI.md  DEPLOYMENT.md
+├── docs/
+│   ├── ARCHITECTURE.md
+│   └── DATABASE.md
 ├── docker-compose.yml
 ├── .env.example
 ├── frontend/
@@ -198,7 +201,7 @@ are not permitted — extend or reuse what's there.
 - Fully normalized schema; every user-owned table has a `user_id` foreign key.
 - Foreign keys are real FKs, not just convention. Cascade/restrict behavior is chosen deliberately
   per relationship (e.g., restrict category deletion while transactions reference it, or use
-  `is_active` soft-delete — decide per entity and document it in `DATABASE.md`).
+  `is_active` soft-delete — decide per entity and document it in `docs/DATABASE.md`).
 - Index every foreign key and every commonly filtered/sorted column (`transactions(user_id, date)`,
   `(user_id, category_id)`, `(user_id, account_id)`, `recurring_transactions.next_run_date`, etc.).
 - All money columns are integer minor units (paise), e.g. `amount_minor BIGINT`. Never a `FLOAT`

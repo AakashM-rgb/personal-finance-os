@@ -266,6 +266,10 @@ async def _generate_due_occurrences(
                 amount_minor=amount_minor,
                 category_id=category_id,
                 description=name,
+                # Always 00:00 UTC on the due date, so every run produces the
+                # exact same timestamp for the same occurrence. That is what
+                # lets the (recurring_transaction_id, occurred_at) unique
+                # constraint catch a concurrent double-generation.
                 occurred_at=datetime.combine(current, time.min, tzinfo=UTC),
             ),
             idempotency_key=None,

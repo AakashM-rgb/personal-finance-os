@@ -4,10 +4,12 @@ account/transaction data - never randomly generated (see CLAUDE.md
 app.services.quick_add_parser, so every branch can be unit-tested with
 plain numbers.
 
-Only factors that can be computed from data this app actually has today are
-included - budget adherence and emergency-fund coverage are deliberately
-left out until the Budgets and Emergency Fund modules exist, rather than
-faked from data that doesn't exist yet:
+The score uses exactly the four factors below. Budget adherence and
+emergency-fund coverage are not factors yet. Budgets now exist (see
+app.services.budget_service), but they are not wired into this score, and
+there is still no emergency-fund data to compute from. Adding a factor
+means adding it here, since the "+ / -" reasons shown to the user must be
+the literal factors used:
 
 - Savings rate (35%): (income - expense) / income this month.
 - Debt burden (25%): the highest credit-card utilization across the user's

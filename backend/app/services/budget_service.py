@@ -54,6 +54,10 @@ def _to_read(
     days_in_mo: int,
     currency: str,
 ) -> BudgetItemRead:
+    # remaining_minor is allowed to go negative: an exceeded budget reports
+    # how far over it is, not a clamped 0. The amount_minor > 0 guard can't
+    # fail for a stored item (a CHECK constraint enforces it), but it keeps
+    # the division safe no matter where this is called from.
     percent_used = round(spent_minor / item.amount_minor * 100, 1) if item.amount_minor > 0 else 0.0
     status = determine_budget_status(percent_used)
     category_name = category_service.display_name(category)
@@ -82,6 +86,16 @@ def _to_read(
 
 
 async def list_budget_items(db: AsyncSession, *, user_id: uuid.UUID) -> list[BudgetItemRead]:
+    """Every budget is a monthly limit measured against the current UTC
+    calendar month (see app.services.month_bounds). Only categorized
+    EXPENSE rows in the user's base currency count as spending: transfers
+    are already excluded by list_in_range, income never counts against a
+    budget, and uncategorized spending has no budget to count against.
+
+    This fetches the month's rows once and sums them per category in
+    Python, rather than running one SUM per budget item (N+1).
+    get_budget_item uses the single-SUM repository method instead, because
+    it only needs one category."""
     items = await BudgetItemRepository(db).list_for_user(user_id)
     if not items:
         return []

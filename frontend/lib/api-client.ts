@@ -45,6 +45,13 @@ interface Envelope<T> {
   meta: Record<string, unknown> | null;
 }
 
+/**
+ * Only a well-formed backend error envelope becomes an ApiError, whose
+ * `message` is written for users and safe to display. Anything else
+ * (network failure, a non-JSON proxy page) rejects with a plain Error, and
+ * callers show their own friendly fallback for that case instead:
+ * `err instanceof ApiError ? err.message : "Failed to load …"`.
+ */
 async function performRequest<T>(path: string, options: RequestOptions): Promise<Envelope<T>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
 

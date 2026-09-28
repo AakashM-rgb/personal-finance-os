@@ -48,6 +48,20 @@ async def _validate_shape(
     transaction_type: TransactionType,
     category_id: uuid.UUID | None,
 ) -> tuple[Account, Account | None]:
+    """The one place a transaction's shape is validated, on create, update,
+    and duplicate alike. Ownership comes first: both accounts are resolved
+    through resolve_active_account, which is scoped by `user_id`, so a
+    transfer can never move money into or out of another user's account,
+    even if the caller guesses a valid account id.
+
+    Transfer rules (the ck_transactions_transfer_shape CHECK constraint is
+    the database-level backstop for the first and last):
+    - a transfer needs a distinct, active, same-currency destination account
+      (v1 never converts between currencies);
+    - a transfer never has a category, because it is neither income nor
+      expense and must not show up in any category total;
+    - a non-transfer never has a destination account.
+    """
     account = await account_service.resolve_active_account(
         db, user_id=user_id, account_id=account_id, field="account_id"
     )
@@ -247,6 +261,16 @@ async def create_transaction(
 async def update_transaction(
     db: AsyncSession, *, user_id: uuid.UUID, transaction_id: uuid.UUID, data: TransactionUpdate
 ) -> TransactionRead:
+    """Partial update: a field left as None in `data` keeps its current
+    value. Because None already means "unchanged", clearing a category needs
+    the separate explicit `clear_category` flag.
+
+    Balances are corrected by fully reversing the old transaction's effect,
+    then applying the new one, instead of computing a delta. That single
+    rule covers every kind of edit (amount, account, type, or expense to
+    transfer) without a per-case formula. Validation runs before either
+    balance adjustment, so a rejected edit leaves every balance untouched.
+    """
     txn_repo = TransactionRepository(db)
     transaction = await txn_repo.get_by_id_for_user(transaction_id, user_id)
     if transaction is None:

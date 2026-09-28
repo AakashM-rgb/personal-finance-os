@@ -223,6 +223,18 @@ async def build_recurring_expense_breakdown(
     currency: str,
     total_expense_minor: int,
 ) -> RecurringExpenseBreakdown:
+    """Two different figures per recurring expense, on purpose:
+
+    - scheduled_monthly_cost_minor: the forward-looking commitment, from the
+      one canonical normalization (calculate_monthly_cost_minor). Only
+      active schedules add to the total, because a deactivated schedule
+      no longer commits the user to anything.
+    - actual_paid_minor: what the generated transactions actually cost in
+      this date range. Inactive schedules are still included, because that
+      money really left the user's accounts.
+
+    The recurring share of expense is actual paid / total expense. It is
+    None (not 0%) when there is no expense in range to divide by."""
     all_recurring = await RecurringTransactionRepository(db).list_for_user(user_id)
     expense_recurring = [r for r in all_recurring if r.type == TransactionType.EXPENSE]
     if not expense_recurring:
@@ -284,6 +296,15 @@ async def build_recurring_expense_breakdown(
 async def get_analytics(
     db: AsyncSession, *, user_id: uuid.UUID, request: AnalyticsRequest
 ) -> AnalyticsRead:
+    """Resolves the range once, as a half-open [date_from, date_to) pair of
+    UTC instants, and passes that same pair to every section, so all the
+    charts in one response describe exactly the same rows. The response
+    reports date_to as an inclusive calendar date (date_to - 1 day),
+    because that is how a user reads a range.
+
+    Every section aggregates only the user's base currency (v1 never sums
+    across currencies), and every income/expense query excludes transfers
+    through its type filter."""
     try:
         date_from, date_to = resolve_date_range(
             request.range,
