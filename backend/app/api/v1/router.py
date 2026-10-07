@@ -17,6 +17,7 @@ from app.api.v1 import (
     recurring_transactions,
     reports,
     search,
+    setu_notifications,
     subscriptions,
     sync,
     transactions,
@@ -43,4 +44,5 @@ api_router.include_router(search.router)
 api_router.include_router(user_settings.router)
 api_router.include_router(notifications.router)
 api_router.include_router(sync.router)
+api_router.include_router(setu_notifications.router)
 api_router.include_router(merchant_rules.router)

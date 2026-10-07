@@ -145,6 +145,7 @@ falls back to a hardcoded secret. The full commented template is `backend/.env.e
 | `AI_RATE_LIMIT`, `SEARCH_RATE_LIMIT` | no | `20/minute`, `30/minute` | Per-user limits on AI and search |
 | `SYNC_PROVIDER` | no | `mock` | `mock` or `setu_sandbox` (a stub with no real calls) |
 | `SYNC_LINK_RATE_LIMIT`, `SYNC_TRIGGER_RATE_LIMIT` | no | `10/minute`, `20/minute` | Sync endpoint limits |
+| `SETU_NOTIFICATION_RATE_LIMIT` | no | `120/minute` | Per-IP limit on the Setu notification webhook |
 | `SETU_SANDBOX_BASE_URL`, `SETU_SANDBOX_CLIENT_ID`, `SETU_SANDBOX_CLIENT_SECRET` | no | unset | Sandbox-only placeholders. Unused today. |
 | `ALEMBIC_DATABASE_URL` | no | `DATABASE_URL` | Migration target override (used to migrate the test DB) |
 

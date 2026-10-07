@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     sync_provider: str = Field(default="mock", alias="SYNC_PROVIDER")
     sync_link_rate_limit: str = Field(default="10/minute", alias="SYNC_LINK_RATE_LIMIT")
     sync_trigger_rate_limit: str = Field(default="20/minute", alias="SYNC_TRIGGER_RATE_LIMIT")
+    # Per-IP limit on the unauthenticated Setu notification webhook
+    # (app.api.v1.setu_notifications) - abuse protection only.
+    setu_notification_rate_limit: str = Field(
+        default="120/minute", alias="SETU_NOTIFICATION_RATE_LIMIT"
+    )
 
     # Setu sandbox Account Aggregator adapter (Phase F8) - SANDBOX/UAT ONLY,
     # never a production credential. Only read when SYNC_PROVIDER=setu_sandbox;
