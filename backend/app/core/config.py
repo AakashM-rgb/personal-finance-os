@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     # write per call, so they're bounded against abuse/resource exhaustion
     # the same way. Defaults generously above real per-tab/device traffic.
     refresh_rate_limit: str = Field(default="60/minute", alias="REFRESH_RATE_LIMIT")
+    # Per-account login throttle (app.services.login_throttle), alongside the
+    # per-IP LOGIN_RATE_LIMIT: an account that collects this many failed
+    # logins within the window refuses further attempts until the oldest
+    # failure ages out - a sliding window, never a permanent lockout. Kept in
+    # PostgreSQL, so it holds across workers, instances, and restarts.
+    login_account_max_failures: int = Field(default=10, alias="LOGIN_ACCOUNT_MAX_FAILURES", gt=0)
+    login_account_window_minutes: int = Field(
+        default=15, alias="LOGIN_ACCOUNT_WINDOW_MINUTES", gt=0
+    )
 
     # Receipt storage/OCR: every one of these is optional by design (CLAUDE.md
     # "never hard-depend on infra that isn't actually provisioned") - absent

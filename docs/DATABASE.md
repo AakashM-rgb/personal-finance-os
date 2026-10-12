@@ -2,14 +2,14 @@
 
 PostgreSQL, managed only through Alembic (`backend/migrations/`). This page was written from
 `backend/app/models/*.py` and `backend/migrations/versions/*.py` at migration head
-`43b64866b554`. Where it disagrees with the code, the code wins.
+`5d7e1c2a9b30`. Where it disagrees with the code, the code wins.
 
 ## Conventions (every table)
 
 | Convention | Where it's enforced |
 |---|---|
 | UUID primary key `id` | `UUIDPrimaryKeyMixin` (`app/models/base.py`) |
-| `created_at` / `updated_at` (timestamptz) | `TimestampMixin`. `audit_logs` has `created_at` only. |
+| `created_at` / `updated_at` (timestamptz) | `TimestampMixin`. `audit_logs` and `login_failures` have `created_at` only. |
 | Money is `BIGINT` integer minor units (paise), named `*_minor` | Every money column. No float/real money columns exist. |
 | Transaction amounts are always positive. The sign comes from `type`. | `CHECK (amount_minor > 0)` |
 | Enums are stored as strings (`native_enum=False`), not Postgres enum types | `str_enum_column` in `app/models/base.py` |
@@ -37,6 +37,8 @@ users 1─* receipts ─0..1 transactions   (receipt can exist before its transa
 users 1─* notifications
 users 1─* linked_accounts 1─* sync_runs
 users 1─* merchant_category_rules *─1 categories
+
+login_failures                          (standalone: keyed by an email HMAC, no FK)
 ```
 
 ## Tables
@@ -48,7 +50,8 @@ users 1─* merchant_category_rules *─1 categories
 | `users` | `email` (unique, indexed), `password_hash` (Argon2 via passlib), `full_name`, `is_active`, `email_verified_at` | `email_verified_at` exists as a column, but no verification flow is implemented yet (see README, current status). |
 | `user_settings` | `user_id` (unique), `currency` (default `INR`), `theme`, `ai_enabled` (default true), `ai_categorization_enabled` (default false), `notification_preferences` (JSONB) | 1:1 with `users`. `currency` is the base currency that every aggregate is computed in. |
 | `sessions` | `user_id`, `refresh_token_hash`, `user_agent`, `ip_address`, `expires_at`, `revoked_at` | Backs refresh-token rotation and "log out everywhere". Only a hash is stored, never the raw token. |
-| `audit_logs` | `user_id` (nullable, SET NULL), `action` (indexed), `entity_type`, `entity_id`, `ip_address`, `user_agent`, `metadata_json` | Actions currently written: `user.register`, `user.login`, `user.login_failed`, `user.logout_all`, `session.reuse_detected`, `linked_account.link_initiated`, `linked_account.link_completed`, `linked_account.revoked`, `linked_account.sync_triggered`. |
+| `audit_logs` | `user_id` (nullable, SET NULL), `action` (indexed), `entity_type`, `entity_id`, `ip_address`, `user_agent`, `metadata_json` | Actions currently written: `user.register`, `user.login`, `user.login_failed`, `user.logout_all`, `session.reuse_detected`, `linked_account.link_initiated`, `linked_account.link_completed`, `linked_account.revoked`, `linked_account.sync_triggered`, `user.login_throttled`. |
+| `login_failures` | `account_key` (HMAC-SHA256 of the normalized login email, 64 hex chars), `created_at` (indexed) | Backs the per-account login throttle (`app/services/login_throttle.py`). Deliberately **not user-owned and no FK**: attempts against unregistered emails are throttled the same way, so rows can't reference `users`. The email is never stored, only a keyed HMAC that can't be matched to guessed emails without the server secret. Composite index `(account_key, created_at)` serves the per-account count. Rows older than the throttle window are pruned on every recorded failure, and a successful login deletes that account's rows. |
 
 ### Core ledger
 
@@ -112,6 +115,7 @@ users 1─* merchant_category_rules *─1 categories
 | `credit_card_details.account_id` | CASCADE | It's an extension row. |
 | `budget_items.category_id`, `merchant_category_rules.category_id` | CASCADE | Rules and limits for a deleted category have nothing left to apply to. |
 | `receipts.transaction_id`, `linked_accounts.account_id`, `transactions.linked_account_id` | SET NULL | Keep the document and the history. |
+| `login_failures` | none (no FK) | Short-lived throttle counters keyed by an email HMAC. Not user data; they expire within the throttle window. |
 
 ## Migration chain
 
@@ -132,11 +136,12 @@ Linear, single head. Each file has both `upgrade()` and `downgrade()`.
 | 11 | `c71bca4337ab` | `linked_accounts`, `sync_runs` (plus sync provenance on `transactions`) |
 | 12 | `1b117abdc7f0` | `transactions.needs_review` and its partial index |
 | 13 | `bf0fbd916161` | `merchant_category_rules` |
-| 14 | `43b64866b554` | `user_settings.ai_categorization_enabled` (**head**) |
+| 14 | `43b64866b554` | `user_settings.ai_categorization_enabled` |
+| 15 | `5d7e1c2a9b30` | `login_failures` (per-account login throttle) (**head**) |
 
 ```bash
 cd backend
-.venv/Scripts/alembic heads      # expect exactly one head: 43b64866b554
+.venv/Scripts/alembic heads      # expect exactly one head: 5d7e1c2a9b30
 .venv/Scripts/alembic current    # which revision DATABASE_URL is at
 .venv/Scripts/alembic check      # fails if the models have drifted from the migrations
 ```

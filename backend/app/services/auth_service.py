@@ -6,13 +6,15 @@ ever persisted (see app.core.security), so a leaked database cannot be used to
 forge a session, and revoking the row immediately invalidates the token.
 """
 
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.errors import AuthenticationError, ConflictError
+from app.core.errors import AuthenticationError, ConflictError, RateLimitedError
 from app.core.security import (
     create_access_token,
     generate_refresh_token,
@@ -26,11 +28,23 @@ from app.models.user import User
 from app.repositories.session_repository import SessionRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.session import SessionRead
+from app.services import login_throttle
 from app.services.audit_service import log_action
 
 settings = get_settings()
 
 _GENERIC_LOGIN_ERROR = "Incorrect email or password."
+# Identical for registered and unregistered emails - see login_throttle.
+_THROTTLED_LOGIN_ERROR = (
+    "Too many failed sign-in attempts for this account. Please wait a few minutes and try again."
+)
+
+
+@lru_cache
+def _unknown_user_password_hash() -> str:
+    """A real Argon2 hash of a random password nobody knows, verified against
+    when the email has no account. Created on first use, not at import."""
+    return hash_password(secrets.token_urlsafe(32))
 
 
 class AuthResult:
@@ -119,10 +133,28 @@ async def login(
     user_agent: str | None,
     ip_address: str | None,
 ) -> AuthResult:
+    throttle_key = login_throttle.account_key(email)
+    if not await login_throttle.acquire(db, throttle_key):
+        await log_action(
+            db,
+            user_id=None,
+            action="user.login_throttled",
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        await db.commit()
+        raise RateLimitedError(_THROTTLED_LOGIN_ERROR)
+
     user_repo = UserRepository(db)
     user = await user_repo.get_by_email(email)
 
-    if user is None or not verify_password(password, user.password_hash):
+    # An unknown email still pays for one full password verification, so
+    # response time doesn't reveal which emails have accounts.
+    password_ok = verify_password(
+        password, user.password_hash if user else _unknown_user_password_hash()
+    )
+    if user is None or not password_ok:
+        await login_throttle.record_failure(db, throttle_key)
         await log_action(
             db,
             user_id=user.id if user else None,
@@ -141,6 +173,7 @@ async def login(
     if not user.is_active:
         raise AuthenticationError(_GENERIC_LOGIN_ERROR)
 
+    await login_throttle.clear(db, throttle_key)
     await log_action(
         db,
         user_id=user.id,

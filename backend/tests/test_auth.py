@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import cookies
 from app.models.audit_log import AuditLog
+from app.services import auth_service
 
 
 async def test_register_creates_user_and_returns_access_token(
@@ -168,6 +169,34 @@ async def test_login_rejects_unknown_email(client: AsyncClient) -> None:
         json={"email": "nobody@example.com", "password": "whatever123"},
     )
     assert response.status_code == 401
+
+
+async def test_unknown_email_still_pays_for_a_password_verification(
+    client: AsyncClient, register_payload: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipping the (deliberately slow) Argon2 check for unknown emails would
+    let response time reveal which emails are registered."""
+    calls: list[str] = []
+    real_verify = auth_service.verify_password
+
+    def spy(password: str, password_hash: str) -> bool:
+        calls.append(password_hash)
+        return real_verify(password, password_hash)
+
+    monkeypatch.setattr(auth_service, "verify_password", spy)
+    await client.post("/api/v1/auth/register", json=register_payload)
+
+    unknown = await client.post(
+        "/api/v1/auth/login", json={"email": "nobody@example.com", "password": "whatever123"}
+    )
+    known = await client.post(
+        "/api/v1/auth/login", json={"email": register_payload["email"], "password": "whatever123"}
+    )
+
+    assert unknown.status_code == known.status_code == 401
+    assert unknown.json() == known.json()
+    assert len(calls) == 2
+    assert all(h.startswith("$argon2") for h in calls)
 
 
 async def test_failed_login_is_actually_persisted_to_the_audit_log(

@@ -6,11 +6,13 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 
-import { ApiError, apiRequest, readCookie } from "@/lib/api-client";
+import { ApiError, apiRequest, readCookie, setSessionRefresher } from "@/lib/api-client";
+import { waitForBackend } from "@/lib/backend-readiness";
 import { getSettings } from "@/lib/settings";
 import { applyTheme, isValidThemePreference, storeTheme } from "@/lib/theme";
 
@@ -45,73 +47,192 @@ interface AuthContextValue {
   user: AuthUser | null;
   accessToken: string | null;
   isLoading: boolean;
+  /** True once a signed-in session was lost because it could no longer be
+   * refreshed (not after an explicit logout) - lets the login page explain
+   * why the user is there. Cleared by the next successful sign-in. */
+  sessionExpired: boolean;
+  /** Why a stored session hasn't been restored yet, when it isn't the
+   * session's fault: "waking" while a slow backend is still starting up,
+   * "unreachable" once it couldn't be reached at all. Never set for a session
+   * the server actually rejected - that one just signs out. */
+  connectionIssue: ConnectionIssue | null;
+  retrySessionRestore: () => void;
   register: (input: RegisterInput) => Promise<void>;
   login: (input: LoginInput) => Promise<void>;
   logout: () => Promise<void>;
   logoutAll: () => Promise<void>;
 }
 
+export type ConnectionIssue = "waking" | "unreachable";
+
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+/** A warm restore takes well under a second; past this, say why it's slow. */
+const SLOW_RESTORE_HINT_MS = 3_000;
+
+let inFlightRefresh: Promise<AccessTokenResponse | null> | null = null;
+let inFlightRestore: Promise<AccessTokenResponse | null> | null = null;
+
+/**
+ * Exchanges the httpOnly refresh cookie for a new access token. Single-flight
+ * at module scope: refresh tokens rotate and the backend revokes EVERY session
+ * when a rotated-out token is reused, so two overlapping refreshes (concurrent
+ * 401s, or React Strict Mode running the mount effect twice) must share one
+ * request. Resolves null only when the backend itself answers 401 - the one
+ * response that proves there is no session to recover. Everything else
+ * (offline, a proxy timeout while the backend wakes up, a 5xx, a 429) says
+ * nothing about the session, so it rejects and the caller keeps what it has.
+ */
+export function refreshAccessToken(): Promise<AccessTokenResponse | null> {
+  if (inFlightRefresh) return inFlightRefresh;
+
+  const csrfToken = readCookie("csrf_token");
+  if (!csrfToken) return Promise.resolve(null);
+
+  inFlightRefresh = apiRequest<AccessTokenResponse>("/api/v1/auth/refresh", {
+    method: "POST",
+    csrfToken,
+  })
+    .catch((error: unknown) => {
+      if (error instanceof ApiError && error.status === 401) return null;
+      throw error;
+    })
+    .finally(() => {
+      inFlightRefresh = null;
+    });
+  return inFlightRefresh;
+}
+
+/**
+ * Restores a stored session on page load: waits until the backend answers
+ * its (side-effect free) health check, then refreshes exactly once.
+ *
+ * The refresh is never retried automatically. If an earlier attempt's
+ * response was lost in transit (e.g. a proxy timed out while a cold backend
+ * was still processing it), the server already rotated the token; sending the
+ * old one again would look like token theft and revoke every session. Waiting
+ * on health first means the one refresh only goes to a backend that is awake.
+ * Rejects when the backend can't be reached, or the refresh fails without a
+ * definite answer - the caller shows that, rather than signing the user out.
+ */
+export function restoreSession(): Promise<AccessTokenResponse | null> {
+  if (inFlightRestore) return inFlightRestore;
+  if (!readCookie("csrf_token")) return Promise.resolve(null);
+
+  inFlightRestore = (async () => {
+    if (!(await waitForBackend())) {
+      throw new Error("The server could not be reached.");
+    }
+    return refreshAccessToken();
+  })().finally(() => {
+    inFlightRestore = null;
+  });
+  return inFlightRestore;
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const [connectionIssue, setConnectionIssue] = useState<ConnectionIssue | null>(null);
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
+  // Read by the session refresher outside React's render cycle.
+  const accessTokenRef = useRef<string | null>(null);
 
-  const applySession = useCallback((result: AccessTokenResponse) => {
-    setUser(result.user);
-    setAccessToken(result.access_token);
-
-    // Reconcile the locally-cached theme with the account's real saved
-    // preference the moment we know who's signed in - e.g. logging in on a
-    // new device/browser must show the user's own theme, not just whatever
-    // the beforeInteractive script guessed from an empty localStorage.
-    // Best-effort: a failure here must never block sign-in.
-    void getSettings(result.access_token)
-      .then((settings) => {
-        if (isValidThemePreference(settings.theme)) {
-          storeTheme(settings.theme);
-          applyTheme(settings.theme);
-        }
-      })
-      .catch(() => {});
+  const setToken = useCallback((token: string | null) => {
+    accessTokenRef.current = token;
+    setAccessToken(token);
   }, []);
+
+  const applySession = useCallback(
+    (result: AccessTokenResponse) => {
+      setUser(result.user);
+      setToken(result.access_token);
+      setSessionExpired(false);
+      setConnectionIssue(null);
+
+      // Reconcile the locally-cached theme with the account's real saved
+      // preference the moment we know who's signed in - e.g. logging in on a
+      // new device/browser must show the user's own theme, not just whatever
+      // the beforeInteractive script guessed from an empty localStorage.
+      // Best-effort: a failure here must never block sign-in.
+      void getSettings(result.access_token)
+        .then((settings) => {
+          if (isValidThemePreference(settings.theme)) {
+            storeTheme(settings.theme);
+            applyTheme(settings.theme);
+          }
+        })
+        .catch(() => {});
+    },
+    [setToken]
+  );
 
   const clearSession = useCallback(() => {
     setUser(null);
-    setAccessToken(null);
-  }, []);
+    setToken(null);
+  }, [setToken]);
 
-  // On first load, try a silent refresh using the httpOnly refresh cookie
-  // (if one exists from a previous visit) to restore the session without
-  // asking the user to log in again.
+  // Lets api-client recover from a 401 mid-session: refresh once, then retry.
+  useEffect(() => {
+    setSessionRefresher(async (failedAccessToken) => {
+      // Signed out meanwhile - never resurrect the session from a stale request.
+      if (accessTokenRef.current === null) return null;
+      // Another request already refreshed; just retry with the current token.
+      if (accessTokenRef.current !== failedAccessToken) return accessTokenRef.current;
+
+      const result = await refreshAccessToken();
+      if (result) {
+        setUser(result.user);
+        setToken(result.access_token);
+        return result.access_token;
+      }
+      if (accessTokenRef.current !== null) {
+        clearSession();
+        setSessionExpired(true);
+      }
+      return null;
+    });
+    return () => setSessionRefresher(null);
+  }, [clearSession, setToken]);
+
+  // On first load (and on an explicit retry), try a silent refresh using the
+  // httpOnly refresh cookie (if one exists from a previous visit) to restore
+  // the session without asking the user to log in again.
   useEffect(() => {
     let isMounted = true;
+    const slowHint = setTimeout(() => {
+      if (isMounted) setConnectionIssue("waking");
+    }, SLOW_RESTORE_HINT_MS);
 
-    async function restoreSession() {
-      const csrfToken = readCookie("csrf_token");
-      if (!csrfToken) {
+    restoreSession()
+      .then((result) => {
+        if (!isMounted) return;
+        setConnectionIssue(null);
+        if (result) applySession(result);
+      })
+      .catch(() => {
+        // No definite answer about the session - never treat that as signed
+        // out, which would send the user to the login page for nothing.
+        if (isMounted) setConnectionIssue("unreachable");
+      })
+      .finally(() => {
+        clearTimeout(slowHint);
         if (isMounted) setIsLoading(false);
-        return;
-      }
-      try {
-        const result = await apiRequest<AccessTokenResponse>("/api/v1/auth/refresh", {
-          method: "POST",
-          csrfToken,
-        });
-        if (isMounted) applySession(result);
-      } catch {
-        // No valid session to restore - stay logged out, silently.
-      } finally {
-        if (isMounted) setIsLoading(false);
-      }
-    }
+      });
 
-    void restoreSession();
     return () => {
       isMounted = false;
+      clearTimeout(slowHint);
     };
-  }, [applySession]);
+  }, [applySession, restoreAttempt]);
+
+  const retrySessionRestore = useCallback(() => {
+    setIsLoading(true);
+    setConnectionIssue(null);
+    setRestoreAttempt((attempt) => attempt + 1);
+  }, []);
 
   const register = useCallback(
     async (input: RegisterInput) => {
@@ -161,8 +282,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [accessToken, clearSession]);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, accessToken, isLoading, register, login, logout, logoutAll }),
-    [user, accessToken, isLoading, register, login, logout, logoutAll]
+    () => ({
+      user,
+      accessToken,
+      isLoading,
+      sessionExpired,
+      connectionIssue,
+      retrySessionRestore,
+      register,
+      login,
+      logout,
+      logoutAll,
+    }),
+    [
+      user,
+      accessToken,
+      isLoading,
+      sessionExpired,
+      connectionIssue,
+      retrySessionRestore,
+      register,
+      login,
+      logout,
+      logoutAll,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

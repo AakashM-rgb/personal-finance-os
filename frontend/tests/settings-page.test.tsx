@@ -32,6 +32,9 @@ function mockAuthed() {
     login: vi.fn(),
     logout: vi.fn(),
     logoutAll: vi.fn(),
+    sessionExpired: false,
+    connectionIssue: null,
+    retrySessionRestore: vi.fn(),
   });
 }
 
@@ -117,6 +120,9 @@ describe("SettingsPage", () => {
       login: vi.fn(),
       logout: vi.fn(),
       logoutAll: vi.fn(),
+      sessionExpired: false,
+      connectionIssue: null,
+      retrySessionRestore: vi.fn(),
     });
     vi.spyOn(settingsLib, "getSettings").mockResolvedValue({
       currency: "INR",

@@ -18,9 +18,14 @@ Browser ──HTTPS──▶ Next.js frontend (frontend/)         public web app
                       └──TLS──▶ Managed PostgreSQL        migrated with Alembic
 ```
 
-The browser talks to the API **directly** (client-side `fetch`, `credentials: "include"`). The
-Next.js server never proxies API calls. The API base URL is baked into the frontend bundle at
-build time from `NEXT_PUBLIC_API_URL`.
+All API calls are client-side `fetch` with `credentials: "include"`, through
+`frontend/lib/api-client.ts`. Where they go is decided at **build time** by `next.config.ts`:
+
+- **Direct mode** (`NEXT_PUBLIC_API_URL` set, or neither variable set in local dev): the browser
+  calls the API origin directly.
+- **Proxy mode** (`BACKEND_ORIGIN` set): the browser calls its own origin
+  (`/api/v1/...`), and the frontend host reverse-proxies `/api/*` to `BACKEND_ORIGIN`. The
+  browser never contacts the backend origin itself.
 
 ### Choosing domains (read this first)
 
@@ -32,8 +37,8 @@ work fully:
 | Topology | Settings | Result |
 |---|---|---|
 | **A. Sibling subdomains of a domain you control** (recommended): `https://app.example.com` + `https://api.example.com` | `NEXT_PUBLIC_API_URL=https://api.example.com`, `CORS_ORIGINS=https://app.example.com`, `COOKIE_DOMAIN=example.com` | Everything works, including session restore on reload and logout. |
-| **B. One public origin with path routing**: a platform router or reverse proxy sends `/api/*` to the backend and everything else to the frontend | `NEXT_PUBLIC_API_URL=https://app.example.com` (the shared origin), `CORS_ORIGINS=https://app.example.com`, `COOKIE_DOMAIN` unset | Everything works. Requires a host that supports path-based routing. |
-| **C. Two unrelated domains** (e.g. two different platform-provided default subdomains) | `COOKIE_DOMAIN` unset. It can't be set to another site's domain, and platform default domains are usually on the Public Suffix List. | **Limited.** Sign-up, login, and the whole app work in the current tab, but **every full page reload or new tab signs the user out**, and logout can't revoke the server-side session (it simply expires). Acceptable only as a last-resort demo. |
+| **B. One public origin with path routing**: the frontend reverse-proxies `/api/*` to the backend (built in: set `BACKEND_ORIGIN`), so the browser sees one origin. Works with two unrelated platform domains, such as `*.vercel.app` + `*.onrender.com`; no custom domain needed. | Frontend: `BACKEND_ORIGIN=https://<backend host>`, `NEXT_PUBLIC_API_URL` **unset**. Backend: `COOKIE_DOMAIN` unset. | Everything works, including session restore on reload and logout. See [Vercel + Render](#vercel--render-same-origin-proxy). |
+| **C. Two unrelated domains, called directly** (`NEXT_PUBLIC_API_URL` set to the other domain) | `COOKIE_DOMAIN` unset. It can't be set to another site's domain, and platform default domains are usually on the Public Suffix List. | **Broken session restore. Don't use; use B instead.** The cookies belong to the backend's domain, so the frontend's JavaScript can't read `csrf_token`, and `SameSite=Lax` keeps both cookies off cross-site requests. Login works in the current tab, but **every full page reload or new tab signs the user out**, and logout can't revoke the server-side session. |
 
 `COOKIE_DOMAIN` broadens the cookies to every subdomain of that domain. Only use it with a
 domain whose subdomains you fully control.
@@ -49,17 +54,22 @@ domain whose subdomains you fully control.
 | Start | `npm run start` (`next start`). It listens on `$PORT` (defaults to 3000). |
 | Root directory | `frontend/` |
 
-**Environment (build-time, public):**
+**Environment (build-time). Set exactly one of these; the build fails if both are set:**
 
-| Variable | Required | Staging value |
+| Variable | Topology | Value |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | **yes** | The API origin: scheme and host only, no trailing slash, no `/api/v1`, e.g. `https://api.example.com` |
+| `BACKEND_ORIGIN` | **B** (proxy) | The backend origin the frontend proxies `/api/*` to: `https://` + host only, no trailing slash, no `/api/v1`. Not public: read only by `next.config.ts`, never inlined into the browser bundle. |
+| `NEXT_PUBLIC_API_URL` | A (direct) | The API origin the browser calls: scheme and host only, no trailing slash, no `/api/v1`, e.g. `https://api.example.com`. Public, inlined into the bundle. |
 
-- It's inlined at **build time**. Set it in the platform's build environment and rebuild after
-  changing it.
-- If it's missing at build time, the code falls back to `http://127.0.0.1:8000`, and the
-  deployed site can't reach the API. Always set it.
-- It's public by design. **No other variable may be exposed with a `NEXT_PUBLIC_` prefix**, and
+- Both are read at **build time**. Set them in the platform's build environment and **rebuild**
+  after any change. Changing them without a rebuild has no effect.
+- With neither set, the browser calls `http://localhost:8000` (local dev only), and a deployed
+  site can't reach the API.
+- `next.config.ts` validates `BACKEND_ORIGIN` and fails the build with a clear message if it
+  isn't `https://`, has a path, query, fragment, or credentials, or points at the frontend's own
+  deployment (`VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`), which would
+  loop forever.
+- **No variable other than `NEXT_PUBLIC_API_URL` may use the `NEXT_PUBLIC_` prefix**, and
   the frontend needs no secrets. (Verified: the production bundle contains no `JWT_SECRET`,
   `DATABASE_URL`, `ANTHROPIC_API_KEY`, or `SETU_SANDBOX` references.)
 
@@ -70,7 +80,119 @@ Other notes:
 - Error pages: `app/error.tsx`, `app/(app)/error.tsx`, `app/global-error.tsx`, and a custom
   `app/not-found.tsx` (a real 404 status).
 - `public/sw.js` is a service worker that never caches `/api/` responses or mutating requests.
-  It needs HTTPS in production, which browsers require for service workers anyway.
+  That includes same-origin `/api/` requests in proxy mode. It needs HTTPS in production, which
+  browsers require for service workers anyway.
+
+### Vercel + Render (same-origin proxy)
+
+This is topology B with the platforms' default domains, so no custom domain is needed:
+
+```
+Browser ──▶ https://<project>.vercel.app/dashboard           pages (Vercel)
+        └─▶ https://<project>.vercel.app/api/v1/...  ──rewrite──▶  https://<service>.onrender.com/api/v1/...
+```
+
+**How it works.** With `BACKEND_ORIGIN` set, `next.config.ts` adds one rewrite,
+`/api/:path*` → `${BACKEND_ORIGIN}/api/:path*`, and builds the client with an empty API base
+URL, so every call in `lib/api-client.ts` is relative (`/api/v1/...`). That covers JSON calls,
+auth, refresh, logout, receipt uploads, and blob downloads. The backend's `Set-Cookie` headers
+pass through unchanged, so the browser stores the session cookies as **first-party, host-only**
+cookies of the Vercel host:
+
+- `refresh_token`: `HttpOnly; Secure; SameSite=Lax; Path=/api/v1/auth`. That path still matches
+  the proxied auth URLs. JavaScript can't read it.
+- `csrf_token`: `Secure; SameSite=Lax; Path=/`. Readable by the app's JavaScript, which echoes it
+  in `X-CSRF-Token` for refresh and logout. The double-submit check is unchanged.
+
+None of the backend's cookie flags change, and no cookie needs `SameSite=None`. CORS no longer
+applies, because the browser makes only same-origin requests.
+
+**Proxy behavior to know about:**
+
+- **Caching:** the backend sends no `Cache-Control` header, so its responses aren't
+  CDN-cacheable to begin with. As defense in depth, `next.config.ts` also declares
+  `Cache-Control: private, no-store` for `/api/*`, and Vercel applies header rules at its edge.
+  Self-hosted `next start` does **not** add config headers to externally proxied responses
+  (verified locally), so check this on Vercel with step 1 below. If the header is missing there,
+  the protection rests on the backend never sending a cacheable `Cache-Control`.
+- **Forwarded headers:** the proxy passes the request's method, path, query, body, `Cookie`,
+  and `X-CSRF-Token` through unchanged, and the response's `Set-Cookie` headers back unchanged.
+  It rewrites `Host` to the backend's host and adds `X-Forwarded-Host`. Self-hosted
+  `next start` forwards a client-supplied `X-Forwarded-For` as is (verified locally), which is
+  why the backend must never trust it blindly (see below).
+- **Redirects:** no API route the frontend calls returns a redirect. Next.js redirects a
+  trailing-slash URL (`/api/v1/x/` → `/api/v1/x`, 308) before the rewrite runs. If the backend
+  ever returned an absolute `Location` on the Render host, the browser would follow it
+  cross-origin without the session cookies. It would fail visibly; it can't leak the session.
+- **Cold starts:** a sleeping Render free instance can take tens of seconds to wake, and the
+  proxy has its own upstream timeout, so a request after idle can fail with a gateway error.
+  Session restore on page load handles this (`restoreSession` in `lib/auth-context.tsx`):
+  1. It polls the side-effect-free `GET /api/v1/health` with backoff, for at most 60 seconds
+     (`lib/backend-readiness.ts`). After 3 seconds the page says the server is waking up.
+  2. Only once health answers does it send `POST /auth/refresh`, **exactly once**. It's never
+     retried automatically. If an earlier refresh's response were lost in transit, the backend
+     would already have rotated the token, and resending the old one would trip reuse detection
+     and revoke every session.
+  3. Only the backend's own 401 counts as "no session" and leads to the login page. A network
+     failure, a gateway error, a 5xx, a 429, or a health budget that runs out shows "We couldn't
+     reach the server" with **Try again** and **Go to sign in**. It never signs the user out.
+  4. Mid-session, a failed refresh after a 401 also signs the user out only on a real 401.
+     Otherwise that one request fails and the session stays.
+- **Upload size:** receipts are capped at 10 MB by the backend. Verify after deploy that an
+  upload close to that size passes through the proxy (see the checklist below).
+- **Client IP and rate limiting:** see [Client IP behind the proxy](#client-ip-behind-the-proxy).
+
+**Exact settings:**
+
+| Where | Variable | Value |
+|---|---|---|
+| Vercel (Production; Preview too if used) | `BACKEND_ORIGIN` | `https://personal-finance-os-ug9o.onrender.com` |
+| Vercel | `NEXT_PUBLIC_API_URL` | **Delete it.** If both are set, the build fails on purpose. |
+| Render | `COOKIE_DOMAIN` | Unset (unchanged). |
+| Render | `CORS_ORIGINS` | Keep `https://personal-finance-os-six-sandy.vercel.app`. It's still required at startup, and it's harmless because the browser no longer makes cross-origin calls. |
+| Render | `ENVIRONMENT` | `production` (unchanged; keeps the cookies `Secure`). |
+
+**Redeploy, in this order:**
+
+1. **Backend first.** Run `alembic upgrade head` against the Render database. It adds the
+   `login_failures` table, and the new code's login endpoint needs it. Then deploy the
+   backend. The migration is additive, so the old backend keeps working if it runs first.
+2. **Frontend.** Change the two Vercel variables, then trigger a **new build**: use "Redeploy"
+   without the build cache, or push a commit. An old build keeps the old inlined API URL.
+3. Run the [proxy verification](#proxy-verification-after-deploy) checks.
+
+#### Proxy verification after deploy
+
+Use a fresh browser profile or a private window (stale cookies from the old Render-domain setup
+don't matter, but a clean profile makes the checks unambiguous):
+
+1. `curl -sI https://<frontend>/api/v1/health` returns `200`, with `cache-control: private,
+   no-store` and the backend's `x-content-type-options: nosniff`. This proves the rewrite
+   reaches Render.
+2. Log in. In DevTools → Network, the login request goes to `https://<frontend>/api/v1/auth/login`
+   (not `onrender.com`). In DevTools → Application → Cookies, for the **Vercel** host,
+   `refresh_token` has HttpOnly, Secure, Lax, and path `/api/v1/auth`, and `csrf_token` has
+   Secure, Lax, and path `/`.
+3. **Hard-reload `/dashboard`.** You stay signed in, and the network log shows exactly one
+   `POST /api/v1/auth/refresh` with status `200` and an `x-csrf-token` request header.
+4. Open `/transactions` in a **new tab**. You're signed in there too.
+5. Filter Network by `onrender.com`. There should be **no** requests.
+6. Upload a receipt (try one close to 10 MB), then open it. Both work.
+7. Settings → Security lists this session. Log out, reload, and you're on the login page. Log in
+   on a second browser, choose "Log out of all devices", then reload the first browser. It's
+   signed out.
+8. Wait more than 15 minutes (the access token lifetime), then click around. The app refreshes
+   silently and doesn't send you to the login page.
+9. In the Render logs, confirm that login requests show **your** public IP, not a Vercel IP
+   (see the next section).
+10. **Cold start:** let the Render instance go to sleep (about 15 idle minutes on the free plan),
+    then reload `/dashboard`. You see "Loading your account…", then "Waking up the server…",
+    and you end up signed in. You're **not** sent to the login page. Network shows repeated
+    `GET /api/v1/health` and then exactly **one** `POST /api/v1/auth/refresh`.
+11. **Per-account throttle:** with a throwaway account, enter a wrong password 10 times, then the
+    right one. You get "Too many failed sign-in attempts…". Do the same with an email that has
+    no account: the messages are identical. Don't test this on an account you need in the next
+    15 minutes.
 
 ## 3. Backend (`backend/`)
 
@@ -93,9 +215,14 @@ Other notes:
   the backend can be reached **only** through the platform's proxy (the normal PaaS setup).
   Otherwise, set it to the proxy's IP or range. (uvicorn reads `FORWARDED_ALLOW_IPS` itself; the
   app doesn't.)
-- **One worker:** rate limits are kept in process memory (slowapi's default storage). With
-  several workers or instances, each keeps its own counters, so the effective limit multiplies.
-  One worker is enough for staging.
+- **Client IP trust:** with `FORWARDED_ALLOW_IPS=*`, uvicorn (0.53) takes the **left-most**
+  `X-Forwarded-For` entry as the client IP, and the caller controls that entry. See
+  [Client IP behind the proxy](#client-ip-behind-the-proxy).
+- **One worker:** the per-IP rate limits are kept in process memory (slowapi's default
+  storage). With several workers or instances, each keeps its own counters, so the effective
+  limit multiplies, and every restart resets them. One worker is enough for staging. Before
+  scaling out, back slowapi with a shared store: Redis, through `Limiter(storage_uri=...)`.
+  The per-account login throttle is not affected: it's stored in PostgreSQL.
 
 There are **no startup side effects**: no `create_all`, no seeding, no background scheduler, no
 WebSockets. Settings are loaded at import, and a missing or invalid required variable stops the
@@ -120,7 +247,8 @@ annotated template is `backend/.env.example`.
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | yes | `15` |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | yes | `30` (or shorter for staging) |
 | `CORS_ORIGINS` | yes | The exact frontend origin(s), comma-separated, e.g. `https://app.example.com`. No trailing slash, never `*`. |
-| `LOGIN_RATE_LIMIT`, `REGISTER_RATE_LIMIT` | yes | `5/minute` |
+| `LOGIN_RATE_LIMIT`, `REGISTER_RATE_LIMIT` | yes | `5/minute` (per client IP) |
+| `LOGIN_ACCOUNT_MAX_FAILURES`, `LOGIN_ACCOUNT_WINDOW_MINUTES` | no | Defaults `10` and `15`: the per-account login throttle. See [Client IP behind the proxy](#client-ip-behind-the-proxy). |
 | `COOKIE_DOMAIN` | topology A only | The shared parent domain, e.g. `example.com`. Leave unset for B and C. |
 | `FORWARDED_ALLOW_IPS` | recommended | `*` behind a platform proxy (read by uvicorn) |
 | `REFRESH_RATE_LIMIT`, `AI_RATE_LIMIT`, `SEARCH_RATE_LIMIT`, `SYNC_LINK_RATE_LIMIT`, `SYNC_TRIGGER_RATE_LIMIT` | no | Defaults are fine |
@@ -147,6 +275,55 @@ TLS is terminated by the platform. With `ENVIRONMENT=production`:
   always-on `nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy` headers.
 
 The access token is returned in the JSON body and kept only in browser memory.
+
+### Client IP behind the proxy
+
+Login, registration, refresh, and webhook rate limits are keyed by client IP
+(`slowapi.get_remote_address`, which is `request.client.host`). Sessions and audit logs record
+the same IP. In topology B, every proxied request reaches the backend from the frontend host's
+egress IP, so the real client IP is only available from `X-Forwarded-For`:
+
+- **What has to hold:** the frontend proxy must put the real client IP at the left of
+  `X-Forwarded-For`, *overwriting* any client-supplied value, never appending to it. Confirm
+  this after deploy with step 9 of the proxy verification. If Render logs show a Vercel IP
+  instead, all users share one login bucket (5/minute). That's a denial-of-service on login, not
+  a data leak.
+- **Remaining limitation, already present before the proxy:** the backend's public URL is
+  still reachable directly, bypassing the proxy. Because `FORWARDED_ALLOW_IPS=*` makes uvicorn
+  trust the left-most entry, a direct caller can send an arbitrary `X-Forwarded-For` value on
+  each request, get a fresh rate-limit bucket every time, and write a false IP into audit logs.
+  Narrowing `FORWARDED_ALLOW_IPS` to the platform proxy's range doesn't help in topology B. The
+  proxied traffic would then resolve to the frontend host's egress IPs, and every user would
+  share one bucket.
+- **Mitigation in place: a per-account login throttle** (`app/services/login_throttle.py`),
+  alongside the per-IP limit. It's keyed by the account under attack, not by any header, so
+  rotating or spoofing IPs no longer buys more guesses against one account:
+  - After `LOGIN_ACCOUNT_MAX_FAILURES` (10) failed logins within `LOGIN_ACCOUNT_WINDOW_MINUTES`
+    (15), that account refuses every attempt with a 429. That includes the correct password,
+    or the throttle would confirm a guess.
+  - The window slides, and refused attempts aren't counted, so the lock lifts on its own at
+    most 15 minutes after the last counted failure. There's no permanent lockout.
+  - A successful login clears the account's failures.
+  - Unregistered emails are throttled identically, with the same 401 and 429 bodies, and an
+    unknown email still pays for a full Argon2 verification. Neither the response nor its
+    timing reveals whether an email is registered.
+  - State lives in PostgreSQL (`login_failures`, which stores only an HMAC of the email). A
+    per-account, non-blocking advisory lock (`pg_try_advisory_xact_lock`) keeps the count
+    exact across workers, instances, and restarts. An attempt that overlaps another one on the
+    same account gets the 429 right away instead of queueing, so a flood against one email
+    can't hold database connections that every other user needs.
+  - **Trade-off:** someone who knows a user's email can keep that account throttled by failing
+    10 logins every 15 minutes. That's a nuisance denial of service; it can't let them in. If
+    it happens, the fixes are a CAPTCHA or proof-of-work after a few failures, or trusted-device
+    cookies that exempt a user's known browsers. None is implemented.
+  - **Still IP-keyed and spoofable by direct callers:** registration, refresh, and webhook rate
+    limits, and the IP recorded in audit logs and sessions.
+- **Further mitigation (not yet made):**
+  1. **Authenticate the proxy hop:** the frontend proxy adds a secret header that only it knows
+     (set in both platforms' secret settings). The backend rejects requests without it, and
+     trusts the forwarded client IP only from requests that carry it. That makes the backend
+     unusable except through the frontend. It needs request-header injection at the proxy,
+     which a plain `next.config.ts` rewrite can't do, so it means adding a Next.js `proxy.ts`.
 
 ### File storage (receipts)
 
@@ -180,13 +357,13 @@ The rest of the app writes nothing to disk.
 - **Pool:** SQLAlchemy's default async pool (size 5, overflow 10) with `pool_pre_ping=True`.
   That's at most 15 connections per worker, within a small managed plan.
 
-**Migrations.** Alembic runs 14 linear revisions. The head is `43b64866b554`. Run from `backend/`
+**Migrations.** Alembic runs 15 linear revisions. The head is `5d7e1c2a9b30`. Run from `backend/`
 with the staging `DATABASE_URL` in the environment:
 
 ```bash
 cd backend
 alembic upgrade head      # creates every table and seeds the 14 system categories
-alembic current           # should print: 43b64866b554 (head)
+alembic current           # should print: 5d7e1c2a9b30 (head)
 ```
 
 - On a fresh database this is the complete setup. On later deploys, the same command applies
@@ -244,11 +421,12 @@ curl -o /dev/null -w "%{http_code}" http://localhost:3100/definitely-not-a-page 
    - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers`.
    - Health check path: `/api/v1/health`. One instance, one worker.
 4. **Run migrations** once against the staging database: `alembic upgrade head`, then confirm
-   `alembic current` shows `43b64866b554 (head)`.
+   `alembic current` shows `5d7e1c2a9b30 (head)`.
 5. **Frontend service** (root `frontend/`):
-   - Set `NEXT_PUBLIC_API_URL` to the backend origin in the **build** environment.
+   - In the **build** environment, set `BACKEND_ORIGIN` to the backend origin (topology B), or
+     set `NEXT_PUBLIC_API_URL` to it (topology A). Never set both.
    - Build with `npm ci && npm run build` and start with `npm run start`.
-6. **HTTPS** on both custom domains (the platform-managed certificate is fine).
+6. **HTTPS** on both domains (the platform-managed certificate is fine).
 7. **Smoke test in a real browser:**
    - The landing page loads.
    - Register, then log in.
@@ -300,17 +478,22 @@ curl -o /dev/null -w "%{http_code}" http://localhost:3100/definitely-not-a-page 
 ## Staging limitations (as of this document)
 
 - **Session restore after reload needs topology A or B.** Under C, users are signed out on every
-  reload.
-- **Access tokens last 15 minutes and aren't refreshed automatically** during a session. After
-  that, API calls fail with "Invalid or expired session" until the page is reloaded, and a reload
-  restores the session under A or B. See [ERROR_HANDLING.md](ERROR_HANDLING.md#3-known-gaps).
+  reload. Vercel + Render uses B through the built-in proxy.
+- **Client-IP rate limits can be spoofed** by calling the backend's public URL directly. Login
+  is also protected per account, but registration, refresh, and audit-log IPs aren't. See
+  [Client IP behind the proxy](#client-ip-behind-the-proxy).
+- **Access tokens last 15 minutes** and are refreshed automatically on the first 401, which
+  needs the refresh cookie to reach the backend (topology A or B, same as session restore).
+  When the refresh is rejected, the user is sent to the login page with a "session expired"
+  message.
 - **Receipts** are stored on local, ephemeral disk unless S3 or a volume is configured. OCR is
   the labeled mock.
 - **AI assistant** is the labeled mock unless `ANTHROPIC_API_KEY` is set. **Bank sync** is mock
   only.
 - **No scheduler:** recurring transactions generate when the user clicks "Generate", and
   notifications generate when they're read.
-- **Rate limits are in-memory** and per process, and reset on restart.
+- **Per-IP rate limits are in-memory** and per process, and reset on restart. The per-account
+  login throttle is in PostgreSQL and is unaffected.
 - **Not implemented:** email verification, password reset, account deletion, and data export.
 - **No deployment config files** (Dockerfile, platform manifests) are committed. Configure the
   commands above in the platform's settings.

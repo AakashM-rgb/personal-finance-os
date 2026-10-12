@@ -27,6 +27,9 @@ function mockAuthed() {
     login: vi.fn(),
     logout: vi.fn(),
     logoutAll: vi.fn(),
+    sessionExpired: false,
+    connectionIssue: null,
+    retrySessionRestore: vi.fn(),
   });
 }
 

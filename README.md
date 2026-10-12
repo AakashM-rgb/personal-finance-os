@@ -137,6 +137,7 @@ falls back to a hardcoded secret. The full commented template is `backend/.env.e
 | `CORS_ORIGINS` | yes | none | Comma-separated frontend origins |
 | `LOGIN_RATE_LIMIT`, `REGISTER_RATE_LIMIT` | yes | none | e.g. `5/minute` |
 | `REFRESH_RATE_LIMIT` | no | `60/minute` | `/auth/refresh` and `/auth/logout` |
+| `LOGIN_ACCOUNT_MAX_FAILURES`, `LOGIN_ACCOUNT_WINDOW_MINUTES` | no | `10`, `15` | Per-account login throttle: failed logins allowed per email within the window (minutes) |
 | `RECEIPT_STORAGE_DIR` | no | `var/receipts` | Local receipt storage (dev) |
 | `S3_BUCKET`, `S3_REGION` | no | unset | Switch receipt storage to S3 when both are set |
 | `OCR_PROVIDER` | no | `mock` | Only `mock` is implemented |
@@ -153,7 +154,8 @@ Frontend (`frontend/.env.local`, template `frontend/.env.example`):
 
 | Variable | Purpose |
 |---|---|
-| `NEXT_PUBLIC_API_URL` | Backend base URL, e.g. `http://localhost:8000`. Must share a hostname with the frontend. |
+| `NEXT_PUBLIC_API_URL` | Backend base URL, e.g. `http://localhost:8000`. Must share a hostname with the frontend. Defaults to `http://localhost:8000`. |
+| `BACKEND_ORIGIN` | Deployments only, instead of `NEXT_PUBLIC_API_URL`: the frontend reverse-proxies `/api/*` to this origin. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). |
 
 ## API reference
 
@@ -290,8 +292,8 @@ inclusive). Export `format` is `csv`, `xlsx`, or `pdf`.
 
 ## Database schema
 
-PostgreSQL with **18 tables**, created by **14 linear Alembic migrations** (head
-`43b64866b554`). Full column, constraint, index, and delete-behavior reference:
+PostgreSQL with **19 tables**, created by **15 linear Alembic migrations** (head
+`5d7e1c2a9b30`). Full column, constraint, index, and delete-behavior reference:
 [docs/DATABASE.md](docs/DATABASE.md).
 
 | Group | Tables |
@@ -341,7 +343,9 @@ Strategy, fixtures, per-module testing matrix, and known gaps: [docs/TESTING.md]
   endpoints (`/auth/refresh`, `/auth/logout`). Every other mutation needs a bearer header, which a
   cross-site request can't attach.
 - **Rate limits:** register, login, refresh/logout, the AI assistant, search, and sync
-  link/trigger (slowapi).
+  link/trigger (slowapi, per client IP, in memory). Login also has a per-account throttle
+  stored in PostgreSQL. It's independent of client IP and identical for unregistered emails
+  (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#client-ip-behind-the-proxy)).
 - **Headers:** `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
   `Referrer-Policy: strict-origin-when-cross-origin`, and HSTS in production.
 - **Uploads:** file type is checked from the file's own bytes, not its name; there's a 10 MB
@@ -397,8 +401,7 @@ provider and a Setu sandbox seam.
 - A real OCR provider. A real bank-sync provider (`setu_sandbox` is an unimplemented stub).
 - Budget adherence and emergency fund as health-score factors.
 
-**Known engineering gaps:** automatic access-token refresh on the client, request and user IDs
-in server error logs, an explicit prompt-injection guard for user text sent to the LLM, a
+**Known engineering gaps:** request and user IDs in server error logs, an explicit prompt-injection guard for user text sent to the LLM, a
 committed E2E suite, and coverage reporting. See
 [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md#3-known-gaps) and
 [docs/TESTING.md](docs/TESTING.md#known-testing-gaps).
