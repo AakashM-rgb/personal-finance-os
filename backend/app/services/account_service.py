@@ -11,6 +11,7 @@ from app.models.account import Account, AccountType
 from app.models.credit_card_details import CreditCardDetails
 from app.repositories.account_repository import AccountRepository
 from app.schemas.account import AccountCreate, AccountRead, AccountUpdate, CreditCardDetailsRead
+from app.services.ledger_calculations import is_liability
 
 
 async def resolve_active_account(
@@ -46,10 +47,8 @@ def calculate_net_worth(accounts: list[Account]) -> NetWorthBreakdown:
     account type's balance_minor is an asset. `accounts` should already be
     filtered to active, base-currency accounts by the caller (v1 never
     sums across currencies)."""
-    total_assets_minor = sum(a.balance_minor for a in accounts if a.type != AccountType.CREDIT_CARD)
-    total_liabilities_minor = sum(
-        a.balance_minor for a in accounts if a.type == AccountType.CREDIT_CARD
-    )
+    total_assets_minor = sum(a.balance_minor for a in accounts if not is_liability(a.type))
+    total_liabilities_minor = sum(a.balance_minor for a in accounts if is_liability(a.type))
     return NetWorthBreakdown(
         total_assets_minor=total_assets_minor,
         total_liabilities_minor=total_liabilities_minor,
