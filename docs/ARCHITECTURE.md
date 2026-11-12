@@ -78,14 +78,40 @@ row for `(id, user_id)`, so the response doesn't even confirm the resource exist
 
 **Transfers.** `type='transfer'` is a first-class enum value. The service requires a distinct,
 active, same-currency destination account owned by the same user, and no category. The DB
-constraint `ck_transactions_transfer_shape` backs this up. Balances move −amount on the source and
-+amount on the destination. Income and expense aggregates filter on `type`, so transfers never
-count as income or spending.
+constraint `ck_transactions_transfer_shape` backs this up. Money leaves the source and arrives at
+the destination; how each account's stored balance moves depends on its type (see Balances).
+Income and expense aggregates filter on `type`, so transfers never count as income or spending.
+Every transfer between the user's own accounts is net-worth neutral, including a credit-card
+repayment, a cash advance and a card-to-card transfer.
 
-**Balances.** `accounts.balance_minor` is updated in the same DB transaction as the ledger write
-(`_apply_balance_effect`). An edit reverses the old effect, then applies the new one. A delete
-reverses the effect. The net-worth report rebuilds historical balances with a query that mirrors
-these same rules (`sum_balance_delta_by_month_for_accounts`).
+**Balances.** For asset accounts (bank, cash, UPI, savings, wallet) `accounts.balance_minor` is
+what the user holds. For a credit card it is the **amount owed**; a negative value is a credit
+balance (the card was overpaid). `app/services/ledger_calculations.py` is the one mapping from a
+transaction to balance deltas. Each leg has a *cash-flow delta* (income +amount, expense −amount,
+transfer source −amount, transfer destination +amount). An asset stores that delta; a card stores
+its negation. So:
+
+| Transaction | Asset balance | Card amount owed | Net worth |
+|---|---|---|---|
+| Expense on a card | — | +amount | −amount |
+| Income on a card (refund) | — | −amount | +amount |
+| Bank → card (repayment) | −amount | −amount | 0 |
+| Card → bank (cash advance) | +amount | +amount | 0 |
+| Card A → card B | — | A +amount, B −amount | 0 |
+
+Balances are updated in the same DB transaction as the ledger write (`_apply_balance_effect`). An
+edit reverses the old effect, then applies the new one; a delete reverses the effect. Reversals
+load the accounts the transaction was booked against (archived ones included), and account type
+is immutable, so a reversal always uses the same rule as the original application.
+
+Net worth is assets minus amounts owed (`calculate_net_worth`). A transaction changes net worth by
+the sum of its legs' cash-flow deltas, whatever the account types, so the net-worth trend sums
+those deltas directly (`sum_cash_flow_delta_by_month_for_accounts`) with no per-type flip.
+Utilization is `max(owed, 0) / limit`; the dashboard lists a card payment only when something is
+owed, for the minimum payment capped at the amount owed.
+
+A balance set directly through `PUT /accounts` bypasses the ledger, so every actual change writes
+an `account.balance_updated` audit row with the previous and new value.
 
 **Recurring generation.** There's no stored "next run" pointer. For each active schedule, the next
 date is computed from the latest generated transaction (or from `start_date` if there is none) and

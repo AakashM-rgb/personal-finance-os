@@ -373,6 +373,52 @@ alembic current           # should print: a3f9c1d2e7b4 (head)
 - `ALEMBIC_DATABASE_URL` overrides the target for one invocation (used to migrate the test DB
   locally).
 
+### Lockstep deploy: credit-card ledger fix (F-001)
+
+> **Status:** the ledger code fix is on branch `fix/credit-card-ledger-semantics`. The
+> data-correction migration it needs is **not written yet**. Don't deploy the ledger fix until
+> that migration exists, has been reviewed, and has been rehearsed on a copy of the target data.
+
+**Why lockstep.** Before the fix, card transactions were booked with asset signs: a purchase
+*lowered* the stored amount owed. The fixed code books and reverses card legs as changes to the
+amount owed. Both mixed states are wrong:
+
+- **New code, uncorrected data:** editing or deleting an old card transaction reverses it with
+  the new sign, doubling the original error.
+- **Old code, corrected data:** every new card transaction is booked with the old, wrong sign.
+
+So the backend must be **stopped** while the correction runs, and the new backend started only
+after it succeeds. The frontend change (labels only, same API) can ship in either order.
+
+**Procedure:**
+
+1. **Measure first, on the old code.** While the target still runs the pre-fix backend, run the
+   read-only check `scripts/sql/f001_card_ledger_impact_check.sql` (it is only valid against data
+   booked by the old code). Keep its output with the deploy record.
+   - `cards_needing_correction = 0`: the correction is a no-op for this database.
+   - `cards_negative_after_correction` or `cards_over_limit_after_correction` > 0: likely a manual
+     balance edit. Review those cards (Part 2) before the window.
+   - `currency_mismatch_legs` > 0: stop. The correction formula would mix currencies.
+2. **Back up.** Take a platform snapshot and/or `pg_dump -Fc` to encrypted storage. Never put the
+   dump in the repository's `backups/` folder unencrypted.
+3. **Stop the backend** (suspend the service or scale it to zero), so nothing writes to
+   `accounts` or `transactions` during the window.
+4. **Migrate.** Run `alembic upgrade head`. If any card needs correction, the migration will
+   refuse to run without an explicit operator flag (`-x card_balance_correction=apply`); the
+   exact flags are documented with the migration when it lands. Every corrected card gets an
+   audit row with its previous balance and the correction applied.
+5. **Verify** with `alembic current` and the post-migration check shipped with the migration.
+   Note: re-running the impact check afterwards still shows non-zero D, because D is computed
+   from transactions; that is expected.
+6. **Start the new backend**, then deploy the frontend.
+7. **Smoke test:** a card expense raises the amount owed; a bank → card payment lowers the bank
+   balance and the amount owed and leaves net worth unchanged.
+
+**Rollback.** Prefer fixing forward. Card transactions created after the upgrade are booked with
+the new rule, and the old code would reverse them with the wrong sign, so redeploying the old
+backend is not safe on its own. Restoring the snapshot is the last resort: it is only consistent
+because the backend was stopped, and it discards every write made after the snapshot.
+
 ## 5. Health check
 
 | | |
@@ -421,7 +467,9 @@ curl -o /dev/null -w "%{http_code}" http://localhost:3100/definitely-not-a-page 
    - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers`.
    - Health check path: `/api/v1/health`. One instance, one worker.
 4. **Run migrations** once against the staging database: `alembic upgrade head`, then confirm
-   `alembic current` shows `a3f9c1d2e7b4 (head)`.
+   `alembic current` shows `a3f9c1d2e7b4 (head)`. A deploy that includes the credit-card ledger
+   fix must follow the [lockstep procedure](#lockstep-deploy-credit-card-ledger-fix-f-001)
+   instead.
 5. **Frontend service** (root `frontend/`):
    - In the **build** environment, set `BACKEND_ORIGIN` to the backend origin (topology B), or
      set `NEXT_PUBLIC_API_URL` to it (topology A). Never set both.

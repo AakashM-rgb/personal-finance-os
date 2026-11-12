@@ -1,7 +1,8 @@
 # Testing
 
 What the test suites cover, how they're organized, and how to run them. Counts come from actual
-runs on 2026-09-28 (see [Current results](#current-results)), not estimates.
+runs, not estimates. The per-section breakdowns were counted on 2026-09-28; files added since then
+are listed with their own counts, and [Current results](#current-results) is the latest full run.
 
 ## Test stack
 
@@ -64,6 +65,7 @@ values. For example:
 | `services/recurrence.py` | `test_recurrence.py` (18) | Jan 31 → Feb 28/29; stays anchored to the 31st after February; Feb 29 yearly schedule across leap and non-leap years; year rollover |
 | `services/subscription_calculations.py` | `test_subscription_calculations.py` (21) | The canonical monthly/yearly normalization for every frequency, with rounding; unused-subscription evidence at the exact 60-day and 90-day boundaries |
 | `services/analytics_calculations.py` | `test_analytics_calculations.py` (30) | Range presets across year boundaries; day/month granularity at exactly the threshold; trend direction with zero and negative baselines |
+| `services/ledger_calculations.py` | `test_ledger_calculations.py` (101) | Every account type × leg (income, expense, transfer source/destination): assets store the cash-flow delta, credit cards store the amount owed; card purchases cut net worth, refunds raise it, and every transfer (repayment, cash advance, card → card, asset → asset) is net-worth neutral |
 | `services/health_score.py` | `test_health_score.py` (17) | Deterministic score; `None` with no data; weights redistributed when a factor doesn't apply; worst card (not average) for debt; 0–100 bounds |
 | `services/calendar_calculations.py`, `quick_add_parser.py`, `export_formatting`/`export_service.py`, `merchant_normalization.py` | respective files | Calendar projection, quick-add amount/category parsing, CSV/XLSX/PDF rendering, merchant key normalization |
 | `search/*` | `test_search_interpreter.py` (43), `test_search_schema_validation.py` (29), `test_search_period_phrases.py` (24), `test_search_query_builder.py` (11), `test_search_category_resolution.py` (8) | Natural-language text compiles only into the allow-listed filter schema; invalid or out-of-range filters are rejected |
@@ -82,9 +84,22 @@ envelope and the resulting database state. For example:
   pagination.
 - `test_recurring_transactions.py` (39): catch-up generation, running twice is a no-op, archived
   accounts, and the system-wide sweep.
-- `test_reports.py` (16) and `test_report_exports.py` (8): hand-calculated monthly and yearly
-  figures, leap-year February, net-worth reconstruction including transfers into a credit card,
-  and real CSV/XLSX/PDF output.
+- `test_credit_card_ledger.py` (20, added 2026-11): a card expense raises the amount owed,
+  utilization and the net-worth drop; a refund lowers what is owed; a bank → card repayment lowers
+  both balances, leaves net worth unchanged and is neither income nor expense; cash advances and
+  card → card transfers are neutral; overpayment leaves a credit balance; edits (amount, bank ↔
+  card, expense ↔ transfer, expense → refund), deletes (including on an archived card),
+  duplicates, idempotent replay, recurring and receipt transactions on a card; cross-user
+  repayment is rejected.
+- `test_account_balance_audit.py` (6, added 2026-11): a `PUT /accounts` balance change writes an
+  `account.balance_updated` audit row with the previous and new value; unchanged balances, other
+  field edits and ledger writes don't.
+- `test_reports.py` (17) and `test_report_exports.py` (8): hand-calculated monthly and yearly
+  figures, leap-year February, net-worth reconstruction in which a card repayment is neutral and
+  card spending and refunds move the trend in the month they happen, and real CSV/XLSX/PDF output.
+- `test_f001_card_ledger_impact_check_sql.py` (3): the operator's read-only staging check
+  (`scripts/sql/f001_card_ledger_impact_check.sql`) contains only `SELECT`s, transaction control
+  and `SET LOCAL` timeouts, and runs cleanly against the migrated schema.
 - `test_sync_service.py` (70), `test_notifications.py` (45), `test_ai_tools.py` (25),
   `test_auth.py` (26), and the rest.
 
@@ -113,7 +128,9 @@ Every money figure has a test with a hand-computed expected value: totals, budge
 `test_reports.py::test_savings_report_never_fabricates_a_rate_with_zero_income`), net worth
 (`test_dashboard.py::test_total_balance_excludes_credit_card_and_net_worth_subtracts_debt`,
 `test_reports.py::test_net_worth_report_*`), credit utilization
-(`test_accounts.py::test_credit_card_utilization_*`), subscription normalization
+(`test_accounts.py::test_credit_card_utilization_*`, including 0% for a credit balance), the
+credit-card ledger (`test_ledger_calculations.py`, `test_credit_card_ledger.py`), card dues
+(`test_dashboard.py::test_upcoming_credit_card_payment_amount`), subscription normalization
 (`test_subscription_calculations.py`), goal pacing, and balance ledger effects
 (`test_transactions.py`).
 
@@ -157,6 +174,7 @@ Examples, by category:
 | Calendar and reports | `calendar-grid`, `day-detail-modal`, `month-navigator`, `report-controls`, `report-type-tabs`, `category-items-list`, `export-buttons` |
 | AI and search | `ai-assistant-page`, `chat-input`, `chat-message-bubble`, `suggested-questions`, `natural-language-search` |
 | Settings, sync, notifications | `settings-page`, `preferences-section`, `security-section`, `notifications-section`, `connected-accounts-page`, `linked-account-card`, `merchant-rules-page`, `notification-bell` |
+| Accounts | `credit-card-balance` (card balance shown as owed or credit balance, utilization bar clamped to 0–100%, "Amount owed" form label, credit balance in the net-worth report) |
 | Navigation and responsive shell | `mobile-bottom-nav`, `landing-nav`, `landing-page`, `faq-section`, `button` |
 | Offline / PWA | `offline-db`, `offline-sync-queue`, `sync-status-indicator`, `pwa-manifest` |
 | Error states | `error-boundaries` (see below); inline error and empty states inside `connected-accounts-page`, `merchant-rules-page`, `notification-bell`, `ai-assistant-page`, and others |
@@ -182,7 +200,7 @@ row**, because there's no committed browser test suite.
 | Module | Unit | Integration | Isolation | Edge cases | Frontend | E2E |
 |---|---|---|---|---|---|---|
 | Auth / sessions | ✅ `test_security` | ✅ `test_auth` | ✅¹ | ✅ refresh-token reuse, rate limit | ◐² | — |
-| Accounts / credit cards | ◐³ | ✅ | ✅ | ✅ utilization edges, archive | — | — |
+| Accounts / credit cards | ✅ `test_ledger_calculations`³ | ✅ | ✅ | ✅ utilization edges, credit balance, archive | ✅ | — |
 | Categories | — | ✅ | ✅ | ✅ duplicates, concurrent create | — | — |
 | Transactions / transfers | ✅ quick-add parser | ✅ | ✅ | ✅ races, idempotency, currency | ✅ | — |
 | Dashboard / health score | ✅ `test_health_score` | ✅ | ✅ | ✅ | — | — |
@@ -209,7 +227,8 @@ row**, because there's no committed browser test suite.
    rather than through the `other_auth_headers` fixture.
 2. The login and register pages have no direct component tests. Only their links from the
    landing page and nav are tested.
-3. Credit-utilization edge cases are pure assertions inside `test_accounts.py`.
+3. Credit-utilization edge cases are assertions inside `test_accounts.py`; the per-type ledger
+   rule has its own pure unit tests in `test_ledger_calculations.py`.
 4. `test_report_exports.py::test_export_never_leaks_another_users_data` covers exports, but the
    eight JSON `GET /reports/*` endpoints have no cross-user test of their own. They call the same
    service functions the export test exercises.
@@ -237,8 +256,8 @@ pre-existing files that would be reformatted, so it isn't a gate today.
 
 - No E2E/browser test suite. Critical flows (sign up, add an expense, see it on the dashboard)
   are covered only in pieces, by API integration tests and component tests.
-- No frontend tests for the login/register pages, accounts, categories, budgets, or dashboard
-  components.
+- No frontend tests for the login/register pages, categories, budgets, or dashboard components.
+  Accounts are covered only for credit-card balance display and the account form's balance field.
 - No cross-user test for the JSON report endpoints (see note 4 above).
 - No coverage measurement is configured (neither `pytest-cov` nor Vitest coverage), so there are
   no coverage percentages to report.
