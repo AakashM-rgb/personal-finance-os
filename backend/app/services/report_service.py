@@ -471,7 +471,6 @@ async def _build_net_worth_trend(
     trend_start = month_start_n_months_ago(this_month_start, _NET_WORTH_TREND_MONTHS - 1)
 
     account_ids = [a.id for a in accounts]
-    is_liability_by_id = {a.id: a.type == AccountType.CREDIT_CARD for a in accounts}
 
     delta_rows = await TransactionRepository(db).sum_balance_delta_by_month_for_accounts(
         user_id,
@@ -481,10 +480,8 @@ async def _build_net_worth_trend(
         currency=currency,
     )
     net_delta_by_month: dict[date, int] = defaultdict(int)
-    for period, account_id, delta in delta_rows:
-        # A liability account's balance is SUBTRACTED in net worth, so an
-        # increase in what it owes (+delta) DECREASES net worth.
-        net_delta_by_month[period] += -delta if is_liability_by_id.get(account_id, False) else delta
+    for period, _account_id, delta in delta_rows:
+        net_delta_by_month[period] += delta
 
     month_starts = generate_month_periods(trend_start, next_month_start)  # ascending
     net_worth_by_month: dict[date, int] = {}

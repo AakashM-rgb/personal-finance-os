@@ -31,6 +31,7 @@ from app.schemas.transaction import (
     TransactionUpdate,
 )
 from app.services import account_service
+from app.services.ledger_calculations import balance_deltas
 from app.services.merchant_rule_service import upsert_rule
 from app.services.quick_add_parser import parse_quick_add_text
 
@@ -108,26 +109,58 @@ async def _validate_shape(
     return account, None
 
 
+async def _ledger_accounts(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    account_id: uuid.UUID,
+    transfer_account_id: uuid.UUID | None,
+) -> tuple[Account, Account | None]:
+    """The accounts an existing transaction already booked against, for
+    reversing its effect. Unlike _validate_shape, archived accounts are
+    allowed: reversing a past transaction must still undo exactly what it
+    did. An account's type is immutable, so a reversal always uses the same
+    liability rule the original application used."""
+    repo = AccountRepository(db)
+    account = await repo.get_by_id_for_user(account_id, user_id)
+    if account is None:
+        raise NotFoundError("Account not found.")
+    if transfer_account_id is None:
+        return account, None
+    transfer_account = await repo.get_by_id_for_user(transfer_account_id, user_id)
+    if transfer_account is None:
+        raise NotFoundError("Account not found.")
+    return account, transfer_account
+
+
 async def _apply_balance_effect(
     db: AsyncSession,
     *,
-    account_id: uuid.UUID,
-    transfer_account_id: uuid.UUID | None,
+    user_id: uuid.UUID,
+    account: Account,
+    transfer_account: Account | None,
     transaction_type: TransactionType,
     amount_minor: int,
     sign: int,
 ) -> None:
     """sign=1 applies the transaction's effect on account balances; sign=-1
-    reverses it (used before re-applying an edited transaction, and on delete)."""
+    reverses it (used before re-applying an edited transaction, and on
+    delete). The per-account-type deltas come from
+    app.services.ledger_calculations, so a credit card's balance_minor always
+    stays the amount owed."""
+    deltas = balance_deltas(
+        transaction_type,
+        amount_minor,
+        account_type=account.type,
+        transfer_account_type=transfer_account.type if transfer_account is not None else None,
+    )
     account_repo = AccountRepository(db)
-    if transaction_type == TransactionType.EXPENSE:
-        await account_repo.adjust_balance(account_id, -amount_minor * sign)
-    elif transaction_type == TransactionType.INCOME:
-        await account_repo.adjust_balance(account_id, amount_minor * sign)
-    elif transaction_type == TransactionType.TRANSFER:
-        assert transfer_account_id is not None
-        await account_repo.adjust_balance(account_id, -amount_minor * sign)
-        await account_repo.adjust_balance(transfer_account_id, amount_minor * sign)
+    await account_repo.adjust_balance(account.id, user_id, deltas.source_minor * sign)
+    if deltas.destination_minor is not None:
+        assert transfer_account is not None
+        await account_repo.adjust_balance(
+            transfer_account.id, user_id, deltas.destination_minor * sign
+        )
 
 
 async def list_transactions(
@@ -179,7 +212,7 @@ async def create_transaction(
         if existing is not None:
             return _to_read(existing)
 
-    account, _transfer_account = await _validate_shape(
+    account, transfer_account = await _validate_shape(
         db,
         user_id=user_id,
         account_id=data.account_id,
@@ -248,8 +281,9 @@ async def create_transaction(
 
     await _apply_balance_effect(
         db,
-        account_id=data.account_id,
-        transfer_account_id=data.transfer_account_id,
+        user_id=user_id,
+        account=account,
+        transfer_account=transfer_account,
         transaction_type=data.type,
         amount_minor=data.amount_minor,
         sign=1,
@@ -296,7 +330,7 @@ async def update_transaction(
     else:
         new_category_id = transaction.category_id
 
-    account, _transfer_account = await _validate_shape(
+    account, transfer_account = await _validate_shape(
         db,
         user_id=user_id,
         account_id=new_account_id,
@@ -305,18 +339,26 @@ async def update_transaction(
         category_id=new_category_id,
     )
 
-    await _apply_balance_effect(
+    old_account, old_transfer_account = await _ledger_accounts(
         db,
+        user_id=user_id,
         account_id=old_account_id,
         transfer_account_id=old_transfer_account_id,
+    )
+    await _apply_balance_effect(
+        db,
+        user_id=user_id,
+        account=old_account,
+        transfer_account=old_transfer_account,
         transaction_type=old_type,
         amount_minor=old_amount_minor,
         sign=-1,
     )
     await _apply_balance_effect(
         db,
-        account_id=new_account_id,
-        transfer_account_id=new_transfer_account_id,
+        user_id=user_id,
+        account=account,
+        transfer_account=transfer_account,
         transaction_type=new_type,
         amount_minor=new_amount_minor,
         sign=1,
@@ -375,10 +417,17 @@ async def delete_transaction(
     if transaction is None:
         raise NotFoundError("Transaction not found.")
 
-    await _apply_balance_effect(
+    account, transfer_account = await _ledger_accounts(
         db,
+        user_id=user_id,
         account_id=transaction.account_id,
         transfer_account_id=transaction.transfer_account_id,
+    )
+    await _apply_balance_effect(
+        db,
+        user_id=user_id,
+        account=account,
+        transfer_account=transfer_account,
         transaction_type=transaction.type,
         amount_minor=transaction.amount_minor,
         sign=-1,
@@ -397,7 +446,7 @@ async def duplicate_transaction(
 
     # Re-validate rather than trust the original's already-committed state -
     # the account/category may have been archived or deleted since.
-    account, _transfer_account = await _validate_shape(
+    account, transfer_account = await _validate_shape(
         db,
         user_id=user_id,
         account_id=original.account_id,
@@ -429,8 +478,9 @@ async def duplicate_transaction(
 
     await _apply_balance_effect(
         db,
-        account_id=duplicate.account_id,
-        transfer_account_id=duplicate.transfer_account_id,
+        user_id=user_id,
+        account=account,
+        transfer_account=transfer_account,
         transaction_type=duplicate.type,
         amount_minor=duplicate.amount_minor,
         sign=1,

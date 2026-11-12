@@ -432,15 +432,12 @@ async def test_net_worth_report_trend_reflects_a_transfer_between_two_asset_acco
     assert all(v == 1000000 for v in trend_by_month.values())
 
 
-async def test_net_worth_report_trend_reflects_a_transfer_into_a_credit_card_as_real(
+async def test_net_worth_report_trend_treats_a_credit_card_repayment_as_neutral(
     client: AsyncClient, auth_headers: dict
 ) -> None:
-    """Paying a credit card via a transfer from a bank account is a real,
-    ordinary action this app allows - and it is NOT net-worth-neutral,
-    because the credit card leg changes a liability, not an asset. The
-    trend must reflect the actual, larger swing (both legs move net worth
-    the same direction under this app's balance convention), never
-    silently treat every transfer as net-worth-neutral."""
+    """Paying a credit card from a bank account lowers the bank balance and
+    the amount owed by the same amount, so net worth is unchanged - in the
+    current figure and at every trend point."""
     bank = await _create_account(
         client, auth_headers, name="Bank", type="bank_account", balance_minor=1000000
     )
@@ -453,8 +450,7 @@ async def test_net_worth_report_trend_reflects_a_transfer_into_a_credit_card_as_
     for _ in range(2):
         two_months_ago = (two_months_ago - timedelta(days=1)).replace(day=1)
 
-    # Bank -100000 (asset falls), Credit Card +100000 (liability rises) -
-    # net worth falls by 200000 total, not zero.
+    # Bank -100000 (asset falls), Credit Card owed -100000 (liability falls).
     await _create_transaction(
         client, auth_headers, account_id=bank["id"], transfer_account_id=card["id"],
         type="transfer", amount_minor=100000, occurred_at=_iso(two_months_ago),
@@ -462,11 +458,9 @@ async def test_net_worth_report_trend_reflects_a_transfer_into_a_credit_card_as_
 
     response = await client.get("/api/v1/reports/net-worth", headers=auth_headers)
     report = response.json()["data"]
-    # assets 900000, liabilities 200000
-    assert report["net_worth_minor"] == 700000
+    assert report["total_assets_minor"] == 900000
+    assert report["total_liabilities_minor"] == 0
+    assert report["net_worth_minor"] == 900000
 
     trend_by_month = {p["month"]: p["net_worth_minor"] for p in report["trend"]}
-    # Before the transfer, net worth was 900000 (1,000,000 assets - 100,000
-    # starting liability) - 200000 higher than after, never the same value
-    # a "transfers are always neutral" assumption would have produced.
-    assert trend_by_month[two_months_ago.isoformat()] == 900000
+    assert all(v == 900000 for v in trend_by_month.values())

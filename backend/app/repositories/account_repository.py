@@ -41,12 +41,14 @@ class AccountRepository:
     async def flush(self) -> None:
         await self._db.flush()
 
-    async def adjust_balance(self, account_id: uuid.UUID, delta_minor: int) -> None:
+    async def adjust_balance(
+        self, account_id: uuid.UUID, user_id: uuid.UUID, delta_minor: int
+    ) -> None:
         """Atomically applies `balance_minor += delta_minor` at the database
         level (never read-modify-write in Python), so concurrent transactions
         touching the same account can never lose an update."""
         await self._db.execute(
             update(Account)
-            .where(Account.id == account_id)
+            .where(Account.id == account_id, Account.user_id == user_id)
             .values(balance_minor=Account.balance_minor + delta_minor)
         )
