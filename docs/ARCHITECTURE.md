@@ -146,10 +146,49 @@ functions from `lib/<feature>.ts`, which go through `lib/api-client.ts`. Each pa
 `reloadToken` for "Try again". This is the single data layer the project uses. There are no ad
 hoc `fetch` calls in components.
 
+**Keeping views fresh.** `lib/ledger-events.ts` is one app-wide "the ledger changed" signal.
+Flows that change transactions outside the page being viewed (the mobile Add sheet after a
+server-confirmed save, the offline queue after an item syncs) call `notifyLedgerChanged()`. The
+pages that show ledger-derived figures (dashboard, transactions, accounts, budgets, analytics,
+calendar, reports) include `useLedgerVersion()` in their fetch dependencies, so they refetch
+in place, keeping the current data on screen, instead of showing stale numbers. The signal
+carries no data and fetches nothing. A shared query cache would replace it with targeted
+invalidation.
+
 **Auth on the client.** The access token lives only in React state, never in `localStorage`. On
 first load, `AuthProvider` calls `POST /auth/refresh` if a `csrf_token` cookie exists, which
 restores the session from the httpOnly refresh cookie. `(app)/layout.tsx` redirects to `/login`
 when there's no user.
+
+Mid-session, any authenticated request that gets a 401 is recovered inside
+`lib/api-client.ts`: it asks the `SessionRefresher` that `AuthProvider` registers for a new token
+and retries **once**. `refreshAccessToken()` is single-flight at module scope, so concurrent
+401s, and React Strict Mode's double mount, share one `POST /auth/refresh`. This matters
+because refresh tokens rotate, and reusing a rotated-out token revokes every session. A request
+that already used a stale token simply retries with the current one. Auth endpoints are never
+retried, except `POST /auth/change-password`, which authenticates with the access token like any
+protected route (only a 401 is retried; a wrong current password is a 422 and is not). If the
+refresh is rejected, the user is signed out with `sessionExpired` set, and the login page
+explains why.
+
+**Session-bound access tokens.** Each access token carries a `sid` claim naming its session
+*family*: the chain of `sessions` rows one login (or password change) starts, which every
+refresh rotation continues. `get_current_user` honors a token only while its family has a
+non-revoked, unexpired row, so logout, logout-all, a password change, and refresh-token reuse
+detection cut off access tokens immediately instead of after `ACCESS_TOKEN_EXPIRE_MINUTES`.
+Rotation keeps the family, so a refresh in one tab never invalidates the token another tab is
+using. A token without `sid` (issued before this existed) is refused, and the client recovers it
+with one silent refresh.
+
+**Known race: a refresh in flight during a password change.** Changing the password revokes
+every session, including the current one, and sets a fresh refresh cookie in the same response.
+If another tab's refresh sends the old cookie after the change commits but before the browser
+stores the new one, or the change's response is lost in transit, the old cookie is presented
+after being revoked. Reuse detection treats that as a possible theft: it revokes every session,
+including the one the change just issued, and writes a `session.reuse_detected` audit entry. The
+user is signed out everywhere and logs in with the new password. This fails safe, so there is
+deliberately no grace period; an audit entry right after `user.password_changed` from the same
+user is this race, not necessarily a theft.
 
 **Responsive layout.** At `md` and up, the app shows a persistent sidebar. Below `md`, it shows a
 `MobileBottomNav` with a central Add action that opens the quick-add expense sheet.

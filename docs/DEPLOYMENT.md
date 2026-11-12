@@ -357,13 +357,13 @@ The rest of the app writes nothing to disk.
 - **Pool:** SQLAlchemy's default async pool (size 5, overflow 10) with `pool_pre_ping=True`.
   That's at most 15 connections per worker, within a small managed plan.
 
-**Migrations.** Alembic runs 15 linear revisions. The head is `5d7e1c2a9b30`. Run from `backend/`
+**Migrations.** Alembic runs 16 linear revisions. The head is `a3f9c1d2e7b4`. Run from `backend/`
 with the staging `DATABASE_URL` in the environment:
 
 ```bash
 cd backend
 alembic upgrade head      # creates every table and seeds the 14 system categories
-alembic current           # should print: 5d7e1c2a9b30 (head)
+alembic current           # should print: a3f9c1d2e7b4 (head)
 ```
 
 - On a fresh database this is the complete setup. On later deploys, the same command applies
@@ -421,7 +421,7 @@ curl -o /dev/null -w "%{http_code}" http://localhost:3100/definitely-not-a-page 
    - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers`.
    - Health check path: `/api/v1/health`. One instance, one worker.
 4. **Run migrations** once against the staging database: `alembic upgrade head`, then confirm
-   `alembic current` shows `5d7e1c2a9b30 (head)`.
+   `alembic current` shows `a3f9c1d2e7b4 (head)`.
 5. **Frontend service** (root `frontend/`):
    - In the **build** environment, set `BACKEND_ORIGIN` to the backend origin (topology B), or
      set `NEXT_PUBLIC_API_URL` to it (topology A). Never set both.

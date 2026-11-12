@@ -186,6 +186,7 @@ app's OpenAPI schema (`app.openapi()`). The live, typed schema is at `/docs` and
 | POST | `/auth/refresh` | 🍪 ⏱ | Rotate the refresh token and get a new access token. Reusing a rotated token revokes every session for that user. |
 | POST | `/auth/logout` | 🍪 ⏱ | Revoke the current session and clear cookies |
 | POST | `/auth/logout-all` | 🔒 | Revoke every session for the user |
+| POST | `/auth/change-password` | 🔒 ⏱ | Verify the current password and set a new one. Revokes every session (and with it every access token), then issues a fresh session for the caller. Wrong current passwords are throttled per account. |
 | GET | `/auth/me` | 🔒 | Current user |
 | GET | `/auth/sessions` | 🔒 | The caller's active sessions |
 
@@ -292,8 +293,8 @@ inclusive). Export `format` is `csv`, `xlsx`, or `pdf`.
 
 ## Database schema
 
-PostgreSQL with **19 tables**, created by **15 linear Alembic migrations** (head
-`5d7e1c2a9b30`). Full column, constraint, index, and delete-behavior reference:
+PostgreSQL with **19 tables**, created by **16 linear Alembic migrations** (head
+`a3f9c1d2e7b4`). Full column, constraint, index, and delete-behavior reference:
 [docs/DATABASE.md](docs/DATABASE.md).
 
 | Group | Tables |
@@ -357,7 +358,7 @@ Strategy, fixtures, per-module testing matrix, and known gaps: [docs/TESTING.md]
   toggle is enforced in the tool layer itself (`app/ai/tools/registry.py`).
 - **Secrets:** only from the environment. Startup fails if a required value is missing. `.env`
   files are gitignored.
-- **Audit log:** register, login, failed login, logout-all, refresh-token reuse, and sync link
+- **Audit log:** register, login, failed login, logout-all, password change (and failed attempts), refresh-token reuse, and sync link
   lifecycle events.
 - **Service worker:** never caches `/api/` responses or mutating requests.
 
@@ -392,7 +393,7 @@ provider and a Setu sandbox seam.
 **Not implemented yet** (no code exists for these):
 
 - Email verification and password reset. The `users.email_verified_at` column exists, but there
-  are no endpoints. There's also no password change or Google OAuth.
+  are no endpoints. There's also no Google OAuth.
 - Account deletion and full data export endpoints.
 - CSV/Excel **import**. Only export exists.
 - Expense splitting, gamification, and the financial calculator toolbox (Phase 6).

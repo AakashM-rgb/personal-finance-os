@@ -39,6 +39,19 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class ChangePasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=_PASSWORD_MIN_LENGTH, max_length=128)
+    confirm_password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        return _validate_password_strength(value)
+
+
 class AccessTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

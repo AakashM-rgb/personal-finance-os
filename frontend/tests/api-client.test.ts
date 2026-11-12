@@ -117,6 +117,66 @@ describe("api-client session recovery", () => {
     expect(refresher).not.toHaveBeenCalled();
   });
 
+  it("never tries to recover a 401 from login (bad credentials are the answer)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(401, EXPIRED)));
+    const refresher = vi.fn();
+    setSessionRefresher(refresher);
+
+    await expect(
+      apiRequest("/api/v1/auth/login", { method: "POST", accessToken: "stale", body: {} })
+    ).rejects.toBeInstanceOf(ApiError);
+    expect(refresher).not.toHaveBeenCalled();
+  });
+
+  it("recovers an expired token on change-password and sends the change exactly once more", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(401, EXPIRED))
+      .mockResolvedValueOnce(jsonResponse(200, { data: { ok: true }, error: null, meta: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    const refresher = vi.fn().mockResolvedValue("fresh-token");
+    setSessionRefresher(refresher);
+    const body = { current_password: "a", new_password: "b", confirm_password: "b" };
+
+    await apiRequest("/api/v1/auth/change-password", {
+      method: "POST",
+      accessToken: "stale-token",
+      body,
+    });
+
+    expect(refresher).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(authHeaderOf(fetchMock.mock.calls[1])).toBe("Bearer fresh-token");
+    expect((fetchMock.mock.calls[1][1] as RequestInit).body).toBe(JSON.stringify(body));
+  });
+
+  it("never retries change-password on a wrong current password (422)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(422, {
+        data: null,
+        error: {
+          code: "validation_error",
+          message: "Your current password is incorrect.",
+          field_errors: { current_password: "incorrect" },
+        },
+        meta: null,
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const refresher = vi.fn();
+    setSessionRefresher(refresher);
+
+    const error = await apiRequest("/api/v1/auth/change-password", {
+      method: "POST",
+      accessToken: "token",
+      body: {},
+    }).catch((err: unknown) => err);
+
+    expect((error as ApiError).status).toBe(422);
+    expect(refresher).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not attempt recovery for an unauthenticated request", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(401, EXPIRED)));
     const refresher = vi.fn();

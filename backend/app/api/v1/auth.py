@@ -1,4 +1,5 @@
-"""Authentication endpoints: register, login, refresh, logout, logout-all, me."""
+"""Authentication endpoints: register, login, refresh, logout, logout-all, me,
+change-password, sessions."""
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +11,12 @@ from app.core.database import get_db
 from app.core.errors import AuthenticationError
 from app.core.rate_limit import limiter
 from app.models.user import User
-from app.schemas.auth import AccessTokenResponse, LoginRequest, RegisterRequest
+from app.schemas.auth import (
+    AccessTokenResponse,
+    ChangePasswordRequest,
+    LoginRequest,
+    RegisterRequest,
+)
 from app.schemas.user import UserRead
 from app.services import auth_service
 
@@ -123,6 +129,30 @@ async def logout_all(
     await db.commit()
     clear_session_cookies(response)
     return {"data": {"success": True}, "error": None, "meta": None}
+
+
+@router.post("/change-password", response_model=None)
+@limiter.limit(settings.login_rate_limit)
+async def change_password(
+    request: Request,
+    body: ChangePasswordRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    ip_address, user_agent = _client_context(request)
+    result = await auth_service.change_password(
+        db,
+        user=current_user,
+        current_password=body.current_password,
+        new_password=body.new_password,
+        confirm_password=body.confirm_password,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    await db.commit()
+    set_session_cookies(response, raw_refresh_token=result.raw_refresh_token)
+    return {"data": _to_response(result), "error": None, "meta": None}
 
 
 @router.get("/me", response_model=None)

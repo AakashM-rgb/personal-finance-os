@@ -53,8 +53,11 @@ routes; the `rate_limited` code in the envelope isn't asserted), every
 - A well-formed backend error envelope becomes an `ApiError` with `status`, `code`, `message`,
   and `fieldErrors`. Its `message` was written by the backend for users, so it's safe to display.
 - Anything else rejects with a plain `Error`: a network failure (`fetch` throws), a non-JSON body
-  such as a proxy's HTML 502, or a blob download failure without an envelope. Callers never
-  display that error's text.
+  such as a proxy's HTML 502, or a JSON body without an `error` envelope. Callers never display
+  that error's text; `getErrorMessage(err, fallback)` picks the backend message or the fallback.
+- A 401 on an authenticated, non-auth request triggers one session refresh and one retry (see
+  [ARCHITECTURE.md](ARCHITECTURE.md#frontend), "Auth on the client"). Only if that fails does the
+  caller see the 401, and the user is then signed out with a "session expired" message.
 
 ### Layer 2: inline error, loading, and empty states (every data view)
 
@@ -72,9 +75,16 @@ catch (err) { if (isMounted) setError(err instanceof ApiError ? err.message : "F
 - **Empty:** a dashed-border panel explaining what to do next, e.g. "Add your first account…",
   never a bare "No data".
 - **Forms** (the account, budget, category, goal, receipt-review, recurring, subscription, and
-  transaction forms, plus the register page) map `ApiError.fieldErrors` onto the matching inputs, show `ApiError.message` through
-  `components/ui/form-error.tsx` (`role="alert"`) when there are no field errors, and fall back to
-  "Something went wrong. Please try again." for anything else.
+  transaction forms, plus the register page) go through `lib/form-errors.ts::toFormErrors`, which
+  never lets a failure go unshown. Each form lists the backend fields it has an inline slot for
+  (e.g. `amount_minor` → `amount`). A schema (Pydantic) error shows its message inline, in plain
+  wording. A service-rule error shows the backend's **sentence** next to the field, never the
+  machine code in `field_errors` (`"required"`, `"currency mismatch"`). Anything without a
+  slot appears at form level (`components/ui/form-error.tsx`, `role="alert"`). A non-API
+  failure shows "Something went wrong. Please try again."
+- **Item actions** (delete, archive, deactivate, duplicate) use
+  `lib/use-confirmable-action.ts`. A failure shows a `role="alert"` message next to the action,
+  and a failed confirmation stays open so the user can retry or cancel.
 - **Offline writes:** the add-expense sheet queues to IndexedDB when offline, and the header's
   `SyncStatusIndicator` shows pending or failed sync. A 401 during replay is handled in
   `lib/offline/sync-queue.ts`.
@@ -111,12 +121,6 @@ emits its own `<html>` element. It shares the tested `ErrorFallback` component.
 These are recorded as found in the code. They haven't been fixed as part of this documentation
 pass.
 
-- **Access-token expiry mid-session.** Access tokens last `ACCESS_TOKEN_EXPIRE_MINUTES` (15 in
-  `.env.example`). Nothing refreshes them proactively, and only the offline sync queue handles a
-  401. After expiry, pages show the backend's "Invalid or expired session. Please log in again."
-  inline until the user reloads, which restores the session through the refresh cookie. A safe
-  fix needs single-flight refresh, because refresh tokens rotate and reuse is treated as
-  compromise (`session.reuse_detected`).
 - **Inline page error panels aren't live regions.** Form errors use `role="alert"`, but most
   page-level red panels are plain `<div>`s, so screen readers don't announce them automatically.
 - **Server-side error logs** include method, path, and traceback, but no request ID or user ID

@@ -8,8 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import type { Account } from "@/lib/accounts";
-import { ApiError } from "@/lib/api-client";
 import type { Category } from "@/lib/categories";
+import { toFormErrors } from "@/lib/form-errors";
 import { minorUnitsToInputValue, parseMoneyToMinorUnits } from "@/lib/money";
 import {
   FREQUENCY_LABELS,
@@ -18,6 +18,14 @@ import {
   type RecurringTransactionCreateInput,
   type RecurringTransactionUpdateInput,
 } from "@/lib/recurring-transactions";
+
+/** Backend field -> the inline error slot this form renders for it. */
+const API_FIELD_SLOTS: Record<string, string> = {
+  name: "name",
+  account_id: "account_id",
+  amount_minor: "amount",
+  start_date: "start_date",
+};
 
 interface RecurringTransactionFormProps {
   recurring?: RecurringTransaction;
@@ -98,12 +106,9 @@ export function RecurringTransactionForm({
         });
       }
     } catch (err) {
-      if (err instanceof ApiError) {
-        setFieldErrors(err.fieldErrors ?? {});
-        if (!err.fieldErrors) setError(err.message);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      const { fieldErrors: apiFieldErrors, formError } = toFormErrors(err, API_FIELD_SLOTS);
+      setFieldErrors(apiFieldErrors);
+      setError(formError);
     } finally {
       setIsSubmitting(false);
     }

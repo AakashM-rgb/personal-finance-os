@@ -29,9 +29,11 @@ def test_password_verify_rejects_wrong_password() -> None:
 
 def test_access_token_round_trip() -> None:
     user_id = uuid.uuid4()
-    token = create_access_token(user_id)
+    family_id = uuid.uuid4()
+    token = create_access_token(user_id, family_id)
     payload = decode_token(token)
     assert payload["sub"] == str(user_id)
+    assert payload["sid"] == str(family_id)
     assert payload["type"] == TokenType.ACCESS.value
 
 

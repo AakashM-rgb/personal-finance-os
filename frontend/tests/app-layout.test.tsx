@@ -38,6 +38,7 @@ function mockAuth(overrides: Partial<ReturnType<typeof authContext.useAuth>>) {
     login: vi.fn(),
     logout: vi.fn(),
     logoutAll: vi.fn(),
+    changePassword: vi.fn(),
     ...overrides,
   });
 }

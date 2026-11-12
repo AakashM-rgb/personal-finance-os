@@ -318,4 +318,54 @@ describe("AuthProvider", () => {
 
     expect(await screen.findByText("signed out")).toBeInTheDocument();
   });
+
+  it("adopts the fresh session returned by change-password and stays signed in", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = urlOf(input);
+      if (url.endsWith("/auth/refresh")) return Promise.resolve(jsonResponse(200, sessionBody("t1")));
+      if (url.endsWith("/auth/change-password")) {
+        return Promise.resolve(jsonResponse(200, sessionBody("t2")));
+      }
+      if (url.endsWith("/health")) return Promise.resolve(jsonResponse(200, HEALTHY));
+      return Promise.resolve(jsonResponse(200, SETTINGS));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    function ChangePasswordProbe() {
+      const auth = useAuth();
+      return (
+        <>
+          <Probe />
+          <button
+            type="button"
+            onClick={() =>
+              void auth.changePassword({
+                current_password: "old-pass-1",
+                new_password: "new-pass-2",
+                confirm_password: "new-pass-2",
+              })
+            }
+          >
+            Change
+          </button>
+        </>
+      );
+    }
+
+    render(
+      <AuthProvider>
+        <ChangePasswordProbe />
+      </AuthProvider>
+    );
+    await screen.findByText("signed in:t1");
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+
+    expect(await screen.findByText("signed in:t2")).toBeInTheDocument();
+    const call = fetchMock.mock.calls.find(([input]) =>
+      urlOf(input).endsWith("/auth/change-password")
+    );
+    const [, init] = call as unknown as [string, RequestInit];
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer t1");
+  });
 });

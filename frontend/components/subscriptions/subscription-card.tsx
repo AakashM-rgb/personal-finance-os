@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
-
 import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/form-error";
 import { Card } from "@/components/ui/card";
 import { FREQUENCY_LABELS } from "@/lib/recurring-transactions";
 import { formatMoney } from "@/lib/money";
 import type { Subscription } from "@/lib/subscriptions";
 import { cn } from "@/lib/utils";
+import { useConfirmableAction } from "@/lib/use-confirmable-action";
 
 function formatDate(isoDate: string): string {
   return new Date(`${isoDate}T00:00:00`).toLocaleDateString(undefined, {
@@ -24,18 +24,10 @@ interface SubscriptionCardProps {
 }
 
 export function SubscriptionCard({ subscription, onEdit, onDeactivate }: SubscriptionCardProps) {
-  const [isConfirmingDeactivate, setIsConfirmingDeactivate] = useState(false);
-  const [isDeactivating, setIsDeactivating] = useState(false);
-
-  async function handleConfirmDeactivate() {
-    setIsDeactivating(true);
-    try {
-      await onDeactivate();
-    } finally {
-      setIsDeactivating(false);
-      setIsConfirmingDeactivate(false);
-    }
-  }
+  const confirmAction = useConfirmableAction(
+    onDeactivate,
+    "Couldn't deactivate this subscription. Please try again."
+  );
 
   return (
     <Card className={cn("flex flex-col gap-3", !subscription.is_active && "opacity-60")}>
@@ -100,15 +92,15 @@ export function SubscriptionCard({ subscription, onEdit, onDeactivate }: Subscri
       </p>
 
       <div className="mt-1 flex justify-end gap-2">
-        {isConfirmingDeactivate ? (
+        {confirmAction.isConfirming ? (
           <>
-            <Button variant="secondary" onClick={() => setIsConfirmingDeactivate(false)}>
+            <Button variant="secondary" onClick={confirmAction.cancel}>
               Cancel
             </Button>
             <Button
               className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
-              isLoading={isDeactivating}
-              onClick={() => void handleConfirmDeactivate()}
+              isLoading={confirmAction.isPending}
+              onClick={() => void confirmAction.confirm()}
             >
               Confirm deactivate
             </Button>
@@ -119,13 +111,14 @@ export function SubscriptionCard({ subscription, onEdit, onDeactivate }: Subscri
               Edit
             </Button>
             {subscription.is_active && (
-              <Button variant="ghost" onClick={() => setIsConfirmingDeactivate(true)}>
+              <Button variant="ghost" onClick={confirmAction.start}>
                 Deactivate
               </Button>
             )}
           </>
         )}
       </div>
+      <FormError message={confirmAction.error} />
     </Card>
   );
 }

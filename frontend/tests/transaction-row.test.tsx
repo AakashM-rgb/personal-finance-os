@@ -1,9 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { TransactionDetails } from "@/components/transactions/transaction-details";
 import { TransactionRow } from "@/components/transactions/transaction-row";
 import type { Account } from "@/lib/accounts";
+import { ApiError } from "@/lib/api-client";
 import type { Category } from "@/lib/categories";
 import type { Transaction } from "@/lib/transactions";
 
@@ -149,5 +150,96 @@ describe("TransactionDetails source field", () => {
 
     expect(screen.getByText("🔄 Automatically synced")).toBeInTheDocument();
     expect(screen.getByText("Needs review - category not auto-assigned")).toBeInTheDocument();
+  });
+});
+
+describe("TransactionRow actions surface failures instead of swallowing them", () => {
+  function renderRow(overrides: {
+    onDelete?: () => Promise<void>;
+    onDuplicate?: () => Promise<void>;
+  }) {
+    render(
+      <TransactionRow
+        transaction={buildTransaction()}
+        account={account}
+        transferAccount={undefined}
+        category={category}
+        onView={vi.fn()}
+        onEdit={vi.fn()}
+        onDuplicate={overrides.onDuplicate ?? noop}
+        onDelete={overrides.onDelete ?? noop}
+      />
+    );
+  }
+
+  it("shows the backend's message and keeps the confirmation open when a delete fails", async () => {
+    const onDelete = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiError(404, { code: "not_found", message: "Transaction not found.", field_errors: null })
+      );
+    renderRow({ onDelete });
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Transaction not found.");
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeInTheDocument();
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("never shows a raw network error - uses a friendly fallback", async () => {
+    renderRow({ onDelete: vi.fn().mockRejectedValue(new TypeError("Failed to fetch")) });
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't delete this transaction. Please try again.");
+    expect(alert).not.toHaveTextContent("Failed to fetch");
+  });
+
+  it("clears the error when the confirmation is cancelled", async () => {
+    renderRow({ onDelete: vi.fn().mockRejectedValue(new TypeError("Failed to fetch")) });
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("shows a message when duplicating fails", async () => {
+    renderRow({ onDuplicate: vi.fn().mockRejectedValue(new TypeError("Failed to fetch")) });
+
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't duplicate this transaction. Please try again."
+    );
+  });
+});
+
+describe("TransactionDetails actions surface failures", () => {
+  it("shows a delete failure inside the details dialog", async () => {
+    render(
+      <TransactionDetails
+        transaction={buildTransaction()}
+        account={account}
+        transferAccount={undefined}
+        category={category}
+        onEdit={vi.fn()}
+        onDuplicate={noop}
+        onDelete={vi.fn().mockRejectedValue(new TypeError("Failed to fetch"))}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't delete this transaction. Please try again."
+    );
   });
 });

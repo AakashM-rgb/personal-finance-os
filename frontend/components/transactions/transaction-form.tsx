@@ -8,8 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import type { Account } from "@/lib/accounts";
-import { ApiError } from "@/lib/api-client";
 import type { Category } from "@/lib/categories";
+import { toFormErrors } from "@/lib/form-errors";
 import { minorUnitsToInputValue, parseMoneyToMinorUnits } from "@/lib/money";
 import type {
   Transaction,
@@ -17,6 +17,21 @@ import type {
   TransactionType,
   TransactionUpdateInput,
 } from "@/lib/transactions";
+
+/** Backend field -> the inline error slot this form renders for it. Only the
+ * slots currently on screen are listed, so an error for a hidden field falls
+ * back to the form-level message instead of disappearing. */
+function apiFieldSlots(isTransfer: boolean): Record<string, string> {
+  const shared = {
+    amount_minor: "amount",
+    account_id: "account_id",
+    description: "description",
+    occurred_at: "occurred_at",
+  };
+  return isTransfer
+    ? { ...shared, transfer_account_id: "transfer_account_id" }
+    : { ...shared, category_id: "category_id", merchant: "merchant" };
+}
 
 interface TransactionFormProps {
   accounts: Account[];
@@ -126,12 +141,9 @@ export function TransactionForm({
         await onSubmit(payload);
       }
     } catch (err) {
-      if (err instanceof ApiError) {
-        setFieldErrors(err.fieldErrors ?? {});
-        if (!err.fieldErrors) setError(err.message);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      const { fieldErrors: apiFieldErrors, formError } = toFormErrors(err, apiFieldSlots(isTransfer));
+      setFieldErrors(apiFieldErrors);
+      setError(formError);
     } finally {
       setIsSubmitting(false);
     }
@@ -177,6 +189,7 @@ export function TransactionForm({
             value={occurredAt}
             onChange={(e) => setOccurredAt(e.target.value)}
           />
+          <FormError message={fieldErrors.occurred_at ?? null} />
         </div>
       </div>
 
@@ -189,6 +202,7 @@ export function TransactionForm({
             </option>
           ))}
         </Select>
+        <FormError message={fieldErrors.account_id ?? null} />
       </div>
 
       {isTransfer ? (
@@ -221,6 +235,7 @@ export function TransactionForm({
               </option>
             ))}
           </Select>
+          <FormError message={fieldErrors.category_id ?? null} />
         </div>
       )}
 
@@ -228,9 +243,11 @@ export function TransactionForm({
         <Label htmlFor="txn-description">Description</Label>
         <Input
           id="txn-description"
+          maxLength={500}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
+        <FormError message={fieldErrors.description ?? null} />
       </div>
 
       {!isTransfer && (
@@ -239,14 +256,17 @@ export function TransactionForm({
             <Label htmlFor="txn-merchant">Merchant (optional)</Label>
             <Input
               id="txn-merchant"
+              maxLength={200}
               value={merchant}
               onChange={(e) => setMerchant(e.target.value)}
             />
+            <FormError message={fieldErrors.merchant ?? null} />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="txn-payment-method">Payment method (optional)</Label>
             <Input
               id="txn-payment-method"
+              maxLength={50}
               value={paymentMethod}
               onChange={(e) => setPaymentMethod(e.target.value)}
             />
@@ -264,6 +284,7 @@ export function TransactionForm({
           <Label htmlFor="txn-notes">Notes (optional)</Label>
           <textarea
             id="txn-notes"
+            maxLength={5000}
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             rows={2}

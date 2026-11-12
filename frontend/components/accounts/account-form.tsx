@@ -15,8 +15,14 @@ import {
   type AccountType,
   type AccountUpdateInput,
 } from "@/lib/accounts";
-import { ApiError } from "@/lib/api-client";
+import { toFormErrors } from "@/lib/form-errors";
 import { CURRENCIES, minorUnitsToInputValue, parseMoneyToMinorUnits } from "@/lib/money";
+
+/** Backend field -> the inline error slot this form renders for it. */
+const API_FIELD_SLOTS: Record<string, string> = {
+  balance_minor: "balance",
+  "credit_card.credit_limit_minor": "credit_limit",
+};
 
 interface AccountFormProps {
   account?: Account;
@@ -104,12 +110,9 @@ export function AccountForm({ account, onSubmit, onCancel }: AccountFormProps) {
         });
       }
     } catch (err) {
-      if (err instanceof ApiError) {
-        setFieldErrors(err.fieldErrors ?? {});
-        if (!err.fieldErrors) setError(err.message);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      const { fieldErrors: apiFieldErrors, formError } = toFormErrors(err, API_FIELD_SLOTS);
+      setFieldErrors(apiFieldErrors);
+      setError(formError);
     } finally {
       setIsSubmitting(false);
     }

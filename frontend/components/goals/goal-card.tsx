@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
-
 import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/form-error";
 import { Card } from "@/components/ui/card";
 import { getGoalStatus, type GoalStatus, type SavingsGoal } from "@/lib/goals";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import { useConfirmableAction } from "@/lib/use-confirmable-action";
 
 const STATUS_STYLES: Record<GoalStatus, { bar: string; badge: string; label: string }> = {
   completed: {
@@ -46,21 +46,13 @@ interface GoalCardProps {
 }
 
 export function GoalCard({ goal, onEdit, onDelete }: GoalCardProps) {
-  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const confirmAction = useConfirmableAction(
+    onDelete,
+    "Couldn't delete this goal. Please try again."
+  );
   const status = getGoalStatus(goal);
   const style = STATUS_STYLES[status];
   const currency = goal.currency;
-
-  async function handleConfirmDelete() {
-    setIsDeleting(true);
-    try {
-      await onDelete();
-    } finally {
-      setIsDeleting(false);
-      setIsConfirmingDelete(false);
-    }
-  }
 
   return (
     <Card className="flex flex-col gap-3">
@@ -125,15 +117,15 @@ export function GoalCard({ goal, onEdit, onDelete }: GoalCardProps) {
       )}
 
       <div className="mt-1 flex justify-end gap-2">
-        {isConfirmingDelete ? (
+        {confirmAction.isConfirming ? (
           <>
-            <Button variant="secondary" onClick={() => setIsConfirmingDelete(false)}>
+            <Button variant="secondary" onClick={confirmAction.cancel}>
               Cancel
             </Button>
             <Button
               className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
-              isLoading={isDeleting}
-              onClick={() => void handleConfirmDelete()}
+              isLoading={confirmAction.isPending}
+              onClick={() => void confirmAction.confirm()}
             >
               Confirm delete
             </Button>
@@ -143,12 +135,13 @@ export function GoalCard({ goal, onEdit, onDelete }: GoalCardProps) {
             <Button variant="ghost" onClick={onEdit}>
               Edit
             </Button>
-            <Button variant="ghost" onClick={() => setIsConfirmingDelete(true)}>
+            <Button variant="ghost" onClick={confirmAction.start}>
               Delete
             </Button>
           </>
         )}
       </div>
+      <FormError message={confirmAction.error} />
     </Card>
   );
 }

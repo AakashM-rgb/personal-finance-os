@@ -13,12 +13,16 @@ so it holds no matter where attempts come from:
 - Attempts against unregistered emails are throttled identically, so the
   throttle can't reveal which emails have accounts.
 - A successful login clears the account's failures.
+- Wrong current passwords on /auth/change-password are counted the same
+  way under a separate key (password_change_key), so the two counters
+  never lock each other.
 - State lives in PostgreSQL (the only shared store this app provisions), so
   it holds across workers, instances, and restarts.
 """
 
 import hashlib
 import hmac
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,11 +41,24 @@ _ACCOUNT_KEY_SECRET = hmac.new(
 ).digest()
 
 
+_PASSWORD_CHANGE_KEY_SECRET = hmac.new(
+    settings.jwt_secret_key.encode(), b"password-change-throttle-key-v1", hashlib.sha256
+).digest()
+
+
 def account_key(email: str) -> str:
     """Normalized the same way as UserRepository.get_by_email, so every
     spelling that reaches the same account shares one counter."""
     normalized = email.strip().lower()
     return hmac.new(_ACCOUNT_KEY_SECRET, normalized.encode(), hashlib.sha256).hexdigest()
+
+
+def password_change_key(user_id: uuid.UUID) -> str:
+    """The counter for wrong current passwords on /auth/change-password,
+    kept apart from the login counter so an attacker holding a stolen session
+    can't use failed change attempts to lock the real user out of signing in.
+    Derived from its own secret, so no input to account_key can collide."""
+    return hmac.new(_PASSWORD_CHANGE_KEY_SECRET, str(user_id).encode(), hashlib.sha256).hexdigest()
 
 
 def _lock_id(key: str) -> int:

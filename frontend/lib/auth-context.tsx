@@ -43,6 +43,12 @@ interface LoginInput {
   password: string;
 }
 
+export interface ChangePasswordInput {
+  current_password: string;
+  new_password: string;
+  confirm_password: string;
+}
+
 interface AuthContextValue {
   user: AuthUser | null;
   accessToken: string | null;
@@ -61,6 +67,9 @@ interface AuthContextValue {
   login: (input: LoginInput) => Promise<void>;
   logout: () => Promise<void>;
   logoutAll: () => Promise<void>;
+  /** Revokes every session server-side, then adopts the fresh session the
+   * backend issues for this device - the caller stays signed in. */
+  changePassword: (input: ChangePasswordInput) => Promise<void>;
 }
 
 export type ConnectionIssue = "waking" | "unreachable";
@@ -281,6 +290,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [accessToken, clearSession]);
 
+  const changePassword = useCallback(
+    async (input: ChangePasswordInput) => {
+      const result = await apiRequest<AccessTokenResponse>("/api/v1/auth/change-password", {
+        method: "POST",
+        body: input,
+        accessToken,
+      });
+      setUser(result.user);
+      setToken(result.access_token);
+    },
+    [accessToken, setToken]
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -293,6 +315,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       logoutAll,
+      changePassword,
     }),
     [
       user,
@@ -305,6 +328,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       logoutAll,
+      changePassword,
     ]
   );
 

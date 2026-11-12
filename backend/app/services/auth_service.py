@@ -14,7 +14,12 @@ from functools import lru_cache
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.errors import AuthenticationError, ConflictError, RateLimitedError
+from app.core.errors import (
+    AuthenticationError,
+    ConflictError,
+    RateLimitedError,
+    ValidationAppError,
+)
 from app.core.security import (
     create_access_token,
     generate_refresh_token,
@@ -37,6 +42,10 @@ _GENERIC_LOGIN_ERROR = "Incorrect email or password."
 # Identical for registered and unregistered emails - see login_throttle.
 _THROTTLED_LOGIN_ERROR = (
     "Too many failed sign-in attempts for this account. Please wait a few minutes and try again."
+)
+
+_THROTTLED_PASSWORD_CHANGE_ERROR = (
+    "Too many password change attempts for this account. Please wait a few minutes and try again."
 )
 
 
@@ -72,15 +81,21 @@ async def _issue_session(
     user: User,
     user_agent: str | None,
     ip_address: str | None,
+    family_id: uuid.UUID | None = None,
 ) -> AuthResult:
+    """Starts a new session family unless `family_id` continues one - only a
+    refresh rotation passes it, so its access tokens stay bound to the same
+    family as the tokens it replaces (see app.models.session)."""
     session_repo = SessionRepository(db)
 
     session_id = uuid.uuid4()
+    session_family_id = family_id or session_id
     secret = generate_refresh_token()
     expires_at = datetime.now(UTC) + timedelta(days=settings.refresh_token_expire_days)
 
     await session_repo.create(
         session_id=session_id,
+        family_id=session_family_id,
         user_id=user.id,
         refresh_token_hash=hash_refresh_token(secret),
         expires_at=expires_at,
@@ -88,7 +103,7 @@ async def _issue_session(
         ip_address=ip_address,
     )
 
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(user.id, session_family_id)
     raw_refresh_token = _encode_refresh_token(session_id, secret)
     return AuthResult(user=user, access_token=access_token, raw_refresh_token=raw_refresh_token)
 
@@ -247,7 +262,105 @@ async def refresh_session(
     # Rotate: revoke the used token and issue a fresh one, so a stolen-and-replayed
     # refresh token stops working the moment the legitimate client rotates it.
     await session_repo.revoke(session)
-    return await _issue_session(db, user=user, user_agent=user_agent, ip_address=ip_address)
+    return await _issue_session(
+        db,
+        user=user,
+        user_agent=user_agent,
+        ip_address=ip_address,
+        family_id=session.family_id,
+    )
+
+
+async def change_password(
+    db: AsyncSession,
+    *,
+    user: User,
+    current_password: str,
+    new_password: str,
+    confirm_password: str,
+    user_agent: str | None,
+    ip_address: str | None,
+) -> AuthResult:
+    """Replaces the user's password, revokes every session (so any device
+    holding a stolen token is signed out), then issues one fresh session for
+    the caller so changing a password doesn't also sign them out here. All of
+    it commits as one transaction in the router.
+
+    A wrong current password is a 422 on that field, never a 401: the caller
+    IS authenticated, and the frontend treats a 401 as an expired session.
+
+    Wrong current passwords count toward a per-account throttle (separate
+    from the login one - see login_throttle.password_change_key), so a stolen
+    session can't be used to guess the password from rotating IPs."""
+    throttle_key = login_throttle.password_change_key(user.id)
+    # Never waits: a second change for this account while one is in flight
+    # is refused here rather than queued (see LoginFailureRepository).
+    if not await login_throttle.acquire(db, throttle_key):
+        await log_action(
+            db,
+            user_id=user.id,
+            action="user.password_change_throttled",
+            entity_type="user",
+            entity_id=str(user.id),
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        await db.commit()
+        raise RateLimitedError(_THROTTLED_PASSWORD_CHANGE_ERROR)
+
+    # `user` was loaded by get_current_user before any lock was held; a
+    # change committed since then would leave its password_hash stale and let
+    # the old password through. Re-read it under a row lock instead.
+    locked_user = await UserRepository(db).get_by_id_for_update(user.id)
+    if locked_user is None or not locked_user.is_active:
+        raise AuthenticationError("Invalid or expired session. Please log in again.")
+
+    if not verify_password(current_password, locked_user.password_hash):
+        await login_throttle.record_failure(db, throttle_key)
+        await log_action(
+            db,
+            user_id=locked_user.id,
+            action="user.password_change_failed",
+            entity_type="user",
+            entity_id=str(locked_user.id),
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        # Raises before the router's commit - commit here or the failure
+        # record and audit entry are rolled back (same as failed login).
+        await db.commit()
+        raise ValidationAppError(
+            "Your current password is incorrect.",
+            field_errors={"current_password": "incorrect"},
+        )
+
+    if new_password != confirm_password:
+        raise ValidationAppError(
+            "New password and confirmation do not match.",
+            field_errors={"confirm_password": "mismatch"},
+        )
+
+    # current_password was just verified against the stored hash, so a plain
+    # comparison answers "is it unchanged?" without another Argon2 run.
+    if new_password == current_password:
+        raise ValidationAppError(
+            "New password must be different from your current password.",
+            field_errors={"new_password": "unchanged"},
+        )
+
+    await UserRepository(db).update_password_hash(locked_user, hash_password(new_password))
+    await login_throttle.clear(db, throttle_key)
+    await SessionRepository(db).revoke_all_for_user(locked_user.id)
+    await log_action(
+        db,
+        user_id=locked_user.id,
+        action="user.password_changed",
+        entity_type="user",
+        entity_id=str(locked_user.id),
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    return await _issue_session(db, user=locked_user, user_agent=user_agent, ip_address=ip_address)
 
 
 async def logout(db: AsyncSession, *, raw_refresh_token: str) -> None:

@@ -53,6 +53,12 @@ export const demoCategoryBreakdown: CategoryBreakdownItem[] = [
   { category_id: "6", name: "Other", icon: "🏷️", color: "#71717a", amount_minor: 862000, percent: 14.7 },
 ];
 
+/** Mirrors the real score exactly (backend/app/services/health_score.py):
+ * the same four factors, keys, labels, weights, detail wording, and
+ * "positive" threshold (score >= 60) - illustrative numbers, never an
+ * illustrative *factor*. The overall score is the real weighted average of
+ * these: 0.35*100 + 0.25*78 + 0.20*65 + 0.20*52 = 77.9 -> 78 ("Good"). The
+ * savings factor is 100 because the real formula caps it at a 30% rate. */
 export const demoHealthScore: HealthScore = {
   score: 78,
   label: "Good",
@@ -60,25 +66,33 @@ export const demoHealthScore: HealthScore = {
     {
       key: "savings_rate",
       label: "Savings rate",
-      weight: 0.3,
-      score: 85,
-      detail: `You're saving ${demoSavingsRatePercentRounded}% of your income this month.`,
+      weight: 0.35,
+      score: 100,
+      detail: `You saved ${demoSavingsRatePercentRounded}% of your income this month.`,
       is_positive: true,
     },
     {
-      key: "budget_adherence",
-      label: "Budget adherence",
+      key: "debt_burden",
+      label: "Debt burden",
       weight: 0.25,
-      score: 72,
-      detail: "Most categories are within budget this month.",
+      score: 78,
+      detail: "Your highest credit card utilization is 22%.",
       is_positive: true,
     },
     {
       key: "recurring_ratio",
-      label: "Recurring cost ratio",
+      label: "Recurring expense ratio",
       weight: 0.2,
       score: 65,
-      detail: "Recurring bills make up a moderate share of spending.",
+      detail: "Recurring expenses are 35% of your spending this month.",
+      is_positive: true,
+    },
+    {
+      key: "spending_consistency",
+      label: "Spending consistency",
+      weight: 0.2,
+      score: 52,
+      detail: "Your daily spending varies a lot day to day.",
       is_positive: false,
     },
   ],

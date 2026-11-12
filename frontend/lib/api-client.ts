@@ -97,12 +97,22 @@ export function setSessionRefresher(refresher: SessionRefresher | null): void {
   sessionRefresher = refresher;
 }
 
+/** Auth endpoints that authenticate with the access token like any other
+ * protected route, so an expired token there is recoverable. Every other auth
+ * endpoint's 401 is the answer itself (bad credentials, a dead refresh
+ * cookie), and retrying /auth/refresh from inside a refresh would loop. */
+const RECOVERABLE_AUTH_PATHS = new Set(["/api/v1/auth/change-password"]);
+
+function canRecoverSession(path: string): boolean {
+  return !path.startsWith("/api/v1/auth/") || RECOVERABLE_AUTH_PATHS.has(path);
+}
+
 /**
  * Sends a request built for a given access token and, on a 401, recovers the
- * session once and retries with the new token. Auth endpoints are never
- * retried this way - their 401 is the answer, and retrying /auth/refresh from
- * inside a refresh would loop. A 401 means the auth dependency rejected the
- * request before any handler ran, so retrying can't double-apply a write.
+ * session once and retries with the new token. Only a 401 is retried - a 4xx
+ * such as a wrong current password (422) is the server's answer. A 401 means
+ * the auth dependency rejected the request before any handler ran, so
+ * retrying can't double-apply a write.
  */
 async function sendWithSessionRecovery(
   path: string,
@@ -114,7 +124,7 @@ async function sendWithSessionRecovery(
     response.status !== 401 ||
     !accessToken ||
     !sessionRefresher ||
-    path.startsWith("/api/v1/auth/")
+    !canRecoverSession(path)
   ) {
     return response;
   }

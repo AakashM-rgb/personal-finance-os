@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
-
 import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/form-error";
 import { Card } from "@/components/ui/card";
 import type { Budget, BudgetStatus } from "@/lib/budgets";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import { useConfirmableAction } from "@/lib/use-confirmable-action";
 
 const STATUS_STYLES: Record<BudgetStatus, { bar: string; badge: string; label: string }> = {
   healthy: {
@@ -39,19 +39,11 @@ interface BudgetCardProps {
 }
 
 export function BudgetCard({ budget, currency, onEdit, onDelete }: BudgetCardProps) {
-  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const confirmAction = useConfirmableAction(
+    onDelete,
+    "Couldn't delete this budget. Please try again."
+  );
   const style = STATUS_STYLES[budget.status];
-
-  async function handleConfirmDelete() {
-    setIsDeleting(true);
-    try {
-      await onDelete();
-    } finally {
-      setIsDeleting(false);
-      setIsConfirmingDelete(false);
-    }
-  }
 
   return (
     <Card className="flex flex-col gap-3">
@@ -117,15 +109,15 @@ export function BudgetCard({ budget, currency, onEdit, onDelete }: BudgetCardPro
       </p>
 
       <div className="mt-1 flex justify-end gap-2">
-        {isConfirmingDelete ? (
+        {confirmAction.isConfirming ? (
           <>
-            <Button variant="secondary" onClick={() => setIsConfirmingDelete(false)}>
+            <Button variant="secondary" onClick={confirmAction.cancel}>
               Cancel
             </Button>
             <Button
               className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
-              isLoading={isDeleting}
-              onClick={() => void handleConfirmDelete()}
+              isLoading={confirmAction.isPending}
+              onClick={() => void confirmAction.confirm()}
             >
               Confirm delete
             </Button>
@@ -135,12 +127,13 @@ export function BudgetCard({ budget, currency, onEdit, onDelete }: BudgetCardPro
             <Button variant="ghost" onClick={onEdit}>
               Edit
             </Button>
-            <Button variant="ghost" onClick={() => setIsConfirmingDelete(true)}>
+            <Button variant="ghost" onClick={confirmAction.start}>
               Delete
             </Button>
           </>
         )}
       </div>
+      <FormError message={confirmAction.error} />
     </Card>
   );
 }

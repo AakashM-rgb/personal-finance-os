@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
-
 import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/form-error";
 import type { Account } from "@/lib/accounts";
 import type { Category } from "@/lib/categories";
 import { formatMoney } from "@/lib/money";
 import type { Transaction } from "@/lib/transactions";
+import { useAsyncAction, useConfirmableAction } from "@/lib/use-confirmable-action";
 
 interface TransactionDetailsProps {
   transaction: Transaction;
@@ -52,27 +52,14 @@ export function TransactionDetails({
   onDuplicate,
   onDelete,
 }: TransactionDetailsProps) {
-  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
-  const [isBusy, setIsBusy] = useState(false);
-
-  async function handleDuplicateClick() {
-    setIsBusy(true);
-    try {
-      await onDuplicate();
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
-  async function handleConfirmDelete() {
-    setIsBusy(true);
-    try {
-      await onDelete();
-    } finally {
-      setIsBusy(false);
-      setIsConfirmingDelete(false);
-    }
-  }
+  const deleteAction = useConfirmableAction(
+    onDelete,
+    "Couldn't delete this transaction. Please try again."
+  );
+  const duplicateAction = useAsyncAction(
+    onDuplicate,
+    "Couldn't duplicate this transaction. Please try again."
+  );
 
   return (
     <div className="flex flex-col gap-5">
@@ -132,15 +119,15 @@ export function TransactionDetails({
       </div>
 
       <div className="flex justify-end gap-3 border-t border-zinc-100 pt-4 dark:border-zinc-800">
-        {isConfirmingDelete ? (
+        {deleteAction.isConfirming ? (
           <>
-            <Button variant="secondary" onClick={() => setIsConfirmingDelete(false)}>
+            <Button variant="secondary" onClick={deleteAction.cancel}>
               Cancel
             </Button>
             <Button
               className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
-              isLoading={isBusy}
-              onClick={() => void handleConfirmDelete()}
+              isLoading={deleteAction.isPending}
+              onClick={() => void deleteAction.confirm()}
             >
               Confirm delete
             </Button>
@@ -150,15 +137,20 @@ export function TransactionDetails({
             <Button variant="ghost" onClick={onEdit}>
               Edit
             </Button>
-            <Button variant="ghost" isLoading={isBusy} onClick={() => void handleDuplicateClick()}>
+            <Button
+              variant="ghost"
+              isLoading={duplicateAction.isPending}
+              onClick={() => void duplicateAction.run()}
+            >
               Duplicate
             </Button>
-            <Button variant="ghost" onClick={() => setIsConfirmingDelete(true)}>
+            <Button variant="ghost" onClick={deleteAction.start}>
               Delete
             </Button>
           </>
         )}
       </div>
+      <FormError message={deleteAction.error ?? duplicateAction.error} />
     </div>
   );
 }

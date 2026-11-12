@@ -11,9 +11,11 @@ import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import { getCalendarMonth, type CalendarDay, type CalendarMonth } from "@/lib/calendar";
 import { listCategories, type Category } from "@/lib/categories";
+import { useLedgerVersion } from "@/lib/ledger-events";
 
 export default function CalendarPage() {
   const { accessToken } = useAuth();
+  const ledgerVersion = useLedgerVersion();
   const now = new Date();
 
   const [year, setYear] = useState(now.getFullYear());
@@ -51,7 +53,7 @@ export default function CalendarPage() {
     return () => {
       isMounted = false;
     };
-  }, [accessToken, year, month, reloadToken]);
+  }, [accessToken, year, month, reloadToken, ledgerVersion]);
 
   function handleMonthChange(nextYear: number, nextMonth: number) {
     setYear(nextYear);

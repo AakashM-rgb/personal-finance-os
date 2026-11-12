@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { TransactionForm } from "@/components/transactions/transaction-form";
 import type { Account } from "@/lib/accounts";
+import { ApiError } from "@/lib/api-client";
 import type { Category } from "@/lib/categories";
 import type { Transaction } from "@/lib/transactions";
 
@@ -158,5 +159,93 @@ describe("TransactionForm remember-category checkbox", () => {
 
     fireEvent.change(screen.getByLabelText("Category (optional)"), { target: { value: "" } });
     expect(screen.queryByText(/Remember this category/)).not.toBeInTheDocument();
+  });
+});
+
+describe("TransactionForm shows every server validation failure", () => {
+  const usdAccount: Account = { ...account, id: "acc-usd", name: "US Card", currency: "USD" };
+
+  function renderForEditing(onSubmit: () => Promise<void>) {
+    render(
+      <TransactionForm
+        accounts={[account, usdAccount]}
+        categories={[shopping, education]}
+        transaction={buildTransaction()}
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  }
+
+  it("shows an oversized merchant error next to the merchant field", async () => {
+    renderForEditing(() =>
+      Promise.reject(
+        new ApiError(422, {
+          code: "validation_error",
+          message: "One or more fields are invalid.",
+          field_errors: { merchant: "String should have at most 200 characters" },
+        })
+      )
+    );
+
+    expect(await screen.findByText("Must be 200 characters or fewer.")).toBeInTheDocument();
+  });
+
+  it("limits the merchant field to the backend's 200 characters", () => {
+    renderForEditing(() => Promise.resolve());
+    expect(screen.getByLabelText("Merchant (optional)")).toHaveAttribute("maxlength", "200");
+  });
+
+  it("shows the readable sentence for a missing transfer destination, not 'required'", async () => {
+    renderForEditing(() =>
+      Promise.reject(
+        new ApiError(422, {
+          code: "validation_error",
+          message: "A destination account is required for transfers.",
+          field_errors: { transfer_account_id: "required" },
+        })
+      )
+    );
+    // The transfer slot only renders for transfers, so the sentence must still
+    // appear at form level rather than vanish.
+    expect(
+      await screen.findByText("A destination account is required for transfers.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("required")).not.toBeInTheDocument();
+  });
+
+  it("shows the currency-mismatch sentence under the destination for a transfer", async () => {
+    const onSubmit = vi.fn().mockRejectedValue(
+      new ApiError(422, {
+        code: "validation_error",
+        message: "Transfers between accounts in different currencies aren't supported yet.",
+        field_errors: { transfer_account_id: "currency mismatch" },
+      })
+    );
+    render(
+      <TransactionForm
+        accounts={[account, usdAccount]}
+        categories={[shopping]}
+        initial={{ type: "transfer" }}
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+      />
+    );
+    fireEvent.change(screen.getByLabelText("Amount (INR)"), { target: { value: "100" } });
+    fireEvent.change(screen.getByLabelText("To account"), { target: { value: "acc-usd" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add transaction" }));
+
+    expect(
+      await screen.findByText(
+        "Transfers between accounts in different currencies aren't supported yet."
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText("currency mismatch")).not.toBeInTheDocument();
+  });
+
+  it("falls back to a friendly message when the request never reached the server", async () => {
+    renderForEditing(() => Promise.reject(new TypeError("Failed to fetch")));
+    expect(await screen.findByText("Something went wrong. Please try again.")).toBeInTheDocument();
   });
 });

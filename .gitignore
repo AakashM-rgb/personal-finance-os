@@ -39,3 +39,7 @@ Thumbs.db
 
 # Locally-stored receipt uploads (dev-only; never commit user files)
 backend/var/
+
+# Local database backups - never commit database dumps
+/backups/
+*.dump
