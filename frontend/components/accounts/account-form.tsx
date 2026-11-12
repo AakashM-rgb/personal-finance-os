@@ -152,14 +152,20 @@ export function AccountForm({ account, onSubmit, onCancel }: AccountFormProps) {
       <div className="grid grid-cols-2 gap-4">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="account-balance">
-            {isCreditCard ? "Current usage" : "Current balance"}
+            {isCreditCard ? "Amount owed" : "Current balance"}
           </Label>
           <Input
             id="account-balance"
             inputMode="decimal"
             value={balanceInput}
             onChange={(e) => setBalanceInput(e.target.value)}
+            aria-describedby={isCreditCard ? "account-balance-hint" : undefined}
           />
+          {isCreditCard && (
+            <p id="account-balance-hint" className="text-xs text-zinc-500 dark:text-zinc-400">
+              Enter a negative amount if the card has a credit balance.
+            </p>
+          )}
           <FormError message={fieldErrors.balance ?? null} />
         </div>
         <div className="flex flex-col gap-1.5">

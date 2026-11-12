@@ -1,10 +1,43 @@
 import { Card } from "@/components/ui/card";
+import { describeCardBalance } from "@/lib/accounts";
 import { formatMoney } from "@/lib/money";
 import type { NetWorthReport } from "@/lib/reports";
 import { cn } from "@/lib/utils";
 
 import { NetWorthTrendChart } from "./net-worth-trend-chart";
 import { StatTile, StatTileGrid } from "./stat-tile";
+
+function AccountBalance({
+  balanceMinor,
+  currency,
+  isLiability,
+}: {
+  balanceMinor: number;
+  currency: string;
+  isLiability: boolean;
+}) {
+  if (!isLiability) {
+    return (
+      <span className="font-medium text-zinc-900 dark:text-zinc-50">
+        {formatMoney(balanceMinor, currency)}
+      </span>
+    );
+  }
+  const { amountMinor, label } = describeCardBalance(balanceMinor);
+  return (
+    <span
+      className={cn(
+        "font-medium",
+        label === "credit balance"
+          ? "text-emerald-700 dark:text-emerald-400"
+          : "text-red-600 dark:text-red-400"
+      )}
+    >
+      {formatMoney(amountMinor, currency)}
+      <span className="ml-1 text-xs font-normal">{label}</span>
+    </span>
+  );
+}
 
 export function NetWorthReportView({ report }: { report: NetWorthReport }) {
   return (
@@ -56,16 +89,11 @@ export function NetWorthReportView({ report }: { report: NetWorthReport }) {
                     </span>
                   )}
                 </div>
-                <span
-                  className={cn(
-                    "font-medium",
-                    account.is_liability
-                      ? "text-red-600 dark:text-red-400"
-                      : "text-zinc-900 dark:text-zinc-50"
-                  )}
-                >
-                  {formatMoney(account.balance_minor, account.currency)}
-                </span>
+                <AccountBalance
+                  balanceMinor={account.balance_minor}
+                  currency={account.currency}
+                  isLiability={account.is_liability}
+                />
               </li>
             ))}
           </ul>

@@ -20,6 +20,26 @@ export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   wallet: "Wallet",
 };
 
+/**
+ * A credit card's balance_minor is the amount owed; a negative value is a
+ * credit balance (the card was overpaid). Returns the amount to display
+ * (never negative) and what it means, so no view shows "-₹50 owed".
+ */
+export function describeCardBalance(balanceMinor: number): {
+  amountMinor: number;
+  label: "owed" | "credit balance";
+} {
+  return balanceMinor < 0
+    ? { amountMinor: -balanceMinor, label: "credit balance" }
+    : { amountMinor: balanceMinor, label: "owed" };
+}
+
+/** Utilization clamped to what a 0-100% bar can show. */
+export function utilizationBarPercent(utilizationPercent: number): number {
+  if (!Number.isFinite(utilizationPercent)) return 0;
+  return Math.min(Math.max(utilizationPercent, 0), 100);
+}
+
 export interface CreditCardFields {
   credit_limit_minor: number;
   statement_day: number;

@@ -3,7 +3,12 @@
 import { Button } from "@/components/ui/button";
 import { FormError } from "@/components/ui/form-error";
 import { Card } from "@/components/ui/card";
-import { ACCOUNT_TYPE_LABELS, type Account } from "@/lib/accounts";
+import {
+  ACCOUNT_TYPE_LABELS,
+  describeCardBalance,
+  utilizationBarPercent,
+  type Account,
+} from "@/lib/accounts";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { useConfirmableAction } from "@/lib/use-confirmable-action";
@@ -30,9 +35,11 @@ export function AccountCard({ account, onEdit, onDelete }: AccountCardProps) {
   );
 
   const creditCard = account.credit_card;
-  const utilization = creditCard?.utilization_percent ?? 0;
+  const utilization = Math.max(creditCard?.utilization_percent ?? 0, 0);
+  const barPercent = utilizationBarPercent(utilization);
   const utilizationLevel =
     utilization >= 90 ? "high" : utilization >= 70 ? "medium" : "low";
+  const cardBalance = creditCard ? describeCardBalance(account.balance_minor) : null;
 
   return (
     <Card className="flex flex-col gap-3">
@@ -52,9 +59,16 @@ export function AccountCard({ account, onEdit, onDelete }: AccountCardProps) {
       </div>
 
       <p className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
-        {formatMoney(account.balance_minor, account.currency)}
-        <span className="ml-2 text-xs font-normal text-zinc-500 dark:text-zinc-400">
-          {creditCard ? "owed" : "balance"}
+        {formatMoney(cardBalance ? cardBalance.amountMinor : account.balance_minor, account.currency)}
+        <span
+          className={cn(
+            "ml-2 text-xs font-normal",
+            cardBalance?.label === "credit balance"
+              ? "text-emerald-700 dark:text-emerald-400"
+              : "text-zinc-500 dark:text-zinc-400"
+          )}
+        >
+          {cardBalance ? cardBalance.label : "balance"}
         </span>
       </p>
 
@@ -63,7 +77,8 @@ export function AccountCard({ account, onEdit, onDelete }: AccountCardProps) {
           <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
             <div
               role="progressbar"
-              aria-valuenow={Math.min(utilization, 100)}
+              aria-label="Credit utilization"
+              aria-valuenow={barPercent}
               aria-valuemin={0}
               aria-valuemax={100}
               className={cn(
@@ -72,7 +87,7 @@ export function AccountCard({ account, onEdit, onDelete }: AccountCardProps) {
                 utilizationLevel === "medium" && "bg-amber-500",
                 utilizationLevel === "low" && "bg-emerald-500"
               )}
-              style={{ width: `${Math.min(utilization, 100)}%` }}
+              style={{ width: `${barPercent}%` }}
             />
           </div>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
