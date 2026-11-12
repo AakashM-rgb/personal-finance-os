@@ -100,6 +100,7 @@ async def test_credit_card_utilization_edge_cases(client: AsyncClient, auth_head
         (0, 0.0),  # no usage
         (10000000, 100.0),  # fully utilized
         (12000000, 120.0),  # over limit - allowed to exceed 100%, not clamped/hidden
+        (-500000, 0.0),  # credit balance (overpaid) - nothing owed, never negative
     ]
     for balance_minor, expected_percent in cases:
         response = await client.post(

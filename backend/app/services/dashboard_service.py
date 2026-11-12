@@ -248,13 +248,19 @@ def _build_upcoming_payments(accounts: list[Account], today: date) -> list[Upcom
     `payment_due_day` and current balance owed. No prediction is made for
     plain recurring transactions, since there is no recurring-schedule
     model yet to derive a real next date from (see CLAUDE.md phase plan) -
-    fabricating one would violate "never build fake functionality"."""
+    fabricating one would violate "never build fake functionality".
+
+    A card with nothing owed (zero or a credit balance) has no payment due.
+    Otherwise the amount is the minimum payment, capped at what is owed."""
     payments = []
     for account in accounts:
         if account.type != AccountType.CREDIT_CARD or account.credit_card is None:
             continue
+        owed_minor = account.balance_minor
+        if owed_minor <= 0:
+            continue
         due_date = _next_occurrence_of_day(today, account.credit_card.payment_due_day)
-        amount_minor = account.credit_card.minimum_payment_minor or account.balance_minor
+        amount_minor = min(account.credit_card.minimum_payment_minor or owed_minor, owed_minor)
         payments.append(
             UpcomingPayment(
                 account_id=account.id,

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
 
 
@@ -297,6 +298,86 @@ async def test_no_upcoming_payments_without_any_credit_cards(
     await _create_account(client, auth_headers, type="cash", balance_minor=1000)
     data = await _get_dashboard(client, auth_headers)
     assert data["upcoming_payments"] == []
+
+
+@pytest.mark.parametrize(
+    ("owed_minor", "minimum_payment_minor", "expected_amount_minor"),
+    [
+        (50000, 5000, 5000),  # minimum below what is owed
+        (3000, 5000, 3000),  # minimum capped at what is owed
+        (50000, None, 50000),  # no minimum: the full amount owed
+        (0, 5000, None),  # nothing owed: no payment due
+        (-2000, 5000, None),  # credit balance: no payment due
+    ],
+)
+async def test_upcoming_credit_card_payment_amount(
+    client: AsyncClient,
+    auth_headers: dict,
+    owed_minor: int,
+    minimum_payment_minor: int | None,
+    expected_amount_minor: int | None,
+) -> None:
+    await _create_account(
+        client,
+        auth_headers,
+        type="credit_card",
+        balance_minor=owed_minor,
+        name="Card",
+        credit_card={
+            "credit_limit_minor": 500000,
+            "statement_day": 1,
+            "payment_due_day": 15,
+            "minimum_payment_minor": minimum_payment_minor,
+        },
+    )
+
+    payments = (await _get_dashboard(client, auth_headers))["upcoming_payments"]
+
+    if expected_amount_minor is None:
+        assert payments == []
+    else:
+        assert [p["amount_minor"] for p in payments] == [expected_amount_minor]
+
+
+async def test_upcoming_payment_follows_card_spending(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    card = await _create_account(
+        client,
+        auth_headers,
+        type="credit_card",
+        balance_minor=0,
+        name="Card",
+        credit_card={"credit_limit_minor": 500000, "statement_day": 1, "payment_due_day": 15},
+    )
+    assert (await _get_dashboard(client, auth_headers))["upcoming_payments"] == []
+
+    await _create_transaction(
+        client, auth_headers, account_id=card["id"], type="expense", amount_minor=12000
+    )
+
+    payments = (await _get_dashboard(client, auth_headers))["upcoming_payments"]
+    assert [p["amount_minor"] for p in payments] == [12000]
+
+
+async def test_health_score_debt_factor_follows_card_spending(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    card = await _create_account(
+        client,
+        auth_headers,
+        type="credit_card",
+        balance_minor=0,
+        name="Card",
+        credit_card={"credit_limit_minor": 100000, "statement_day": 1, "payment_due_day": 15},
+    )
+    await _create_transaction(
+        client, auth_headers, account_id=card["id"], type="expense", amount_minor=40000
+    )
+
+    factors = (await _get_dashboard(client, auth_headers))["health_score"]["factors"]
+    debt = next(f for f in factors if f["key"] == "debt_burden")
+    assert debt["score"] == 60  # 40% utilization
 
 
 # --- health score integration ---------------------------------------------------

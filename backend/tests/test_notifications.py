@@ -5,6 +5,7 @@ fake/random notification content anywhere."""
 import asyncio
 from datetime import date, timedelta
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -258,7 +259,7 @@ async def test_credit_card_reminder_created_for_due_date_today(
         json={
             "name": "My Credit Card",
             "type": "credit_card",
-            "balance_minor": 0,
+            "balance_minor": 250000,
             "currency": "INR",
             "credit_card": {
                 "credit_limit_minor": 5000000,
@@ -275,6 +276,32 @@ async def test_credit_card_reminder_created_for_due_date_today(
     assert "My Credit Card" in reminders[0]["title"]
 
 
+@pytest.mark.parametrize("owed_minor", [0, -5000])
+async def test_credit_card_reminder_not_created_when_nothing_is_owed(
+    client: AsyncClient, auth_headers: dict, owed_minor: int
+) -> None:
+    today = date.today()
+    response = await client.post(
+        "/api/v1/accounts",
+        headers=auth_headers,
+        json={
+            "name": "Paid Off Card",
+            "type": "credit_card",
+            "balance_minor": owed_minor,
+            "currency": "INR",
+            "credit_card": {
+                "credit_limit_minor": 5000000,
+                "statement_day": max(today.day - 5, 1),
+                "payment_due_day": today.day,
+            },
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    notifications = await _list_notifications(client, auth_headers)
+    assert await _by_category(notifications, "credit_card_reminder") == []
+
+
 async def test_credit_card_reminder_month_end_clamping(
     client: AsyncClient, auth_headers: dict
 ) -> None:
@@ -286,7 +313,7 @@ async def test_credit_card_reminder_month_end_clamping(
         json={
             "name": "Card 31",
             "type": "credit_card",
-            "balance_minor": 0,
+            "balance_minor": 250000,
             "currency": "INR",
             "credit_card": {
                 "credit_limit_minor": 5000000,
@@ -332,7 +359,7 @@ async def test_multiple_credit_cards_in_window_survive_concurrent_generation(
         json={
             "name": "Card One",
             "type": "credit_card",
-            "balance_minor": 0,
+            "balance_minor": 250000,
             "currency": "INR",
             "credit_card": {
                 "credit_limit_minor": 5000000,
@@ -347,7 +374,7 @@ async def test_multiple_credit_cards_in_window_survive_concurrent_generation(
         json={
             "name": "Card Two",
             "type": "credit_card",
-            "balance_minor": 0,
+            "balance_minor": 250000,
             "currency": "INR",
             "credit_card": {
                 "credit_limit_minor": 5000000,

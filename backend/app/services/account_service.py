@@ -59,10 +59,11 @@ def calculate_net_worth(accounts: list[Account]) -> NetWorthBreakdown:
 def calculate_credit_utilization_percent(balance_minor: int, credit_limit_minor: int) -> float:
     """The one canonical utilization formula - reused by the account API
     response and by the dashboard's health score, so the two can never
-    silently diverge."""
+    silently diverge. A negative balance is a credit balance (overpayment):
+    nothing is owed, so utilization is 0%, never negative."""
     if credit_limit_minor <= 0:
         return 0.0
-    return round((balance_minor / credit_limit_minor) * 100, 2)
+    return round((max(balance_minor, 0) / credit_limit_minor) * 100, 2)
 
 
 def _credit_card_read(details: CreditCardDetails, balance_minor: int) -> CreditCardDetailsRead:

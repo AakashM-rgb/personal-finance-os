@@ -133,10 +133,13 @@ async def _generate_payment_reminder_notifications(
     # the concurrency bug this exact pattern once caused, and
     # _generate_unusual_spending_notifications below for the identical
     # extract-before-any-write precedent already used in this module).
+    # A card with nothing owed (zero or a credit balance) has no payment to remind about.
     credit_cards = [
         (str(account.id), account.name, account.credit_card.payment_due_day)
         for account in accounts
-        if account.type == AccountType.CREDIT_CARD and account.credit_card is not None
+        if account.type == AccountType.CREDIT_CARD
+        and account.credit_card is not None
+        and account.balance_minor > 0
     ]
 
     for account_id, account_name, payment_due_day in credit_cards:
