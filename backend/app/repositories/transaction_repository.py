@@ -455,7 +455,7 @@ class TransactionRepository:
             recurring_id: latest.date() for recurring_id, latest in result.all() if recurring_id
         }
 
-    async def sum_balance_delta_by_month_for_accounts(
+    async def sum_cash_flow_delta_by_month_for_accounts(
         self,
         user_id: uuid.UUID,
         *,
@@ -464,14 +464,15 @@ class TransactionRepository:
         date_to: datetime,
         currency: str,
     ) -> list[tuple[date, uuid.UUID, int]]:
-        """For every account in `account_ids`, the signed delta real
-        transactions applied to that account's balance_minor, grouped by
-        calendar month - mirrors app.services.transaction_service.
-        _apply_balance_effect exactly (income +amount on its account,
-        expense -amount on its account, transfer -amount on `account_id`
-        and +amount on `transfer_account_id`), so a caller reconstructing a
-        historical balance can never silently diverge from how balances are
-        actually mutated. Unlike sum_income_and_expense_by_month, a transfer
+        """For every account in `account_ids`, the cash-flow delta real
+        transactions applied to that account, grouped by calendar month -
+        app.services.ledger_calculations.cash_flow_delta per leg (income
+        +amount on its account, expense -amount on its account, transfer
+        -amount on `account_id` and +amount on `transfer_account_id`). This
+        is the leg's effect on net worth for every account type; for a
+        credit card it is the NEGATED change to balance_minor (the amount
+        owed), so never use it to rebuild a card's stored balance.
+        Unlike sum_income_and_expense_by_month, a transfer
         is NOT excluded here - restricted instead to `account_ids` on
         purpose, since a transfer crossing into/out of one of those accounts
         genuinely changes ITS balance and must be counted; a transfer

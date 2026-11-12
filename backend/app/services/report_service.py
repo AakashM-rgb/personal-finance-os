@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ValidationAppError
-from app.models.account import Account, AccountType
+from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import TransactionType
 from app.repositories.account_repository import AccountRepository
@@ -48,6 +48,7 @@ from app.services.analytics_calculations import (
     resolve_date_range,
     resolve_granularity,
 )
+from app.services.ledger_calculations import is_liability
 from app.services.month_bounds import current_month_bounds, month_start, month_start_n_months_ago
 
 _LARGEST_TRANSACTIONS_LIMIT = 10
@@ -439,18 +440,13 @@ async def _build_net_worth_trend(
                                    total net worth) for every transaction
                                    with occurred_at >= start of m
 
-    A transaction's net-worth effect is derived per account from the same
-    balance delta app.services.transaction_service._apply_balance_effect
-    actually applies (income/expense on their one account, a transfer's
-    -amount/+amount split across its two accounts) - NOT assumed to be
-    "income adds, expense subtracts, transfer is always zero". A transfer
-    is exactly net-worth-neutral when both its accounts are assets, but
-    NOT when either leg is a credit-card account (a liability, subtracted
-    rather than added in net worth) - e.g. paying a card from checking is a
-    real, common transfer that this app allows and that does change net
-    worth under the existing balance convention, so treating every
-    transfer as zero would silently misreport the trend for exactly that
-    routine action.
+    A transaction's net-worth effect is the sum of its legs' cash-flow
+    deltas (app.services.ledger_calculations.cash_flow_delta), whatever the
+    account types: a card stores the negated delta as amount owed and net
+    worth subtracts what is owed, so the two negations cancel. Each leg is
+    still counted per account, so a transfer whose other leg is outside the
+    report's accounts (inactive, or another currency) moves the trend by
+    exactly the leg that is inside it.
 
     One grouped query (month, account) covers the whole trend window; the
     walk-backward subtraction happens as a Python suffix sum over its
@@ -472,7 +468,7 @@ async def _build_net_worth_trend(
 
     account_ids = [a.id for a in accounts]
 
-    delta_rows = await TransactionRepository(db).sum_balance_delta_by_month_for_accounts(
+    delta_rows = await TransactionRepository(db).sum_cash_flow_delta_by_month_for_accounts(
         user_id,
         account_ids=account_ids,
         date_from=trend_start,
@@ -508,7 +504,7 @@ async def get_net_worth_report(db: AsyncSession, *, user_id: uuid.UUID) -> NetWo
             type=a.type.value,
             balance_minor=a.balance_minor,
             currency=a.currency,
-            is_liability=(a.type == AccountType.CREDIT_CARD),
+            is_liability=is_liability(a.type),
         )
         for a in accounts
     ]

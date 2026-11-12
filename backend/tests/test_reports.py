@@ -464,3 +464,45 @@ async def test_net_worth_report_trend_treats_a_credit_card_repayment_as_neutral(
 
     trend_by_month = {p["month"]: p["net_worth_minor"] for p in report["trend"]}
     assert all(v == 900000 for v in trend_by_month.values())
+
+
+async def test_net_worth_report_trend_reflects_card_spending_refunds_and_repayments(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """Card spending lowers net worth in the month it happens, a refund
+    raises it, and repaying the card moves nothing. Walking back from the
+    current figure, each month's opening value must match a forward replay."""
+    bank = await _create_account(
+        client, auth_headers, name="Bank", type="bank_account", balance_minor=1000000
+    )
+    card = await _create_account(
+        client, auth_headers, name="Credit Card", type="credit_card", balance_minor=0,
+        credit_card={"credit_limit_minor": 500000, "statement_day": 5, "payment_due_day": 20},
+    )
+
+    last_month = (date.today().replace(day=1) - timedelta(days=1)).replace(day=1)
+    two_months_ago = (last_month - timedelta(days=1)).replace(day=1)
+    await _create_transaction(
+        client, auth_headers, account_id=card["id"], type="expense", amount_minor=50000,
+        occurred_at=_iso(two_months_ago),
+    )
+    await _create_transaction(
+        client, auth_headers, account_id=bank["id"], transfer_account_id=card["id"],
+        type="transfer", amount_minor=30000, occurred_at=_iso(last_month),
+    )
+    await _create_transaction(
+        client, auth_headers, account_id=card["id"], type="income", amount_minor=5000
+    )
+
+    report = (await client.get("/api/v1/reports/net-worth", headers=auth_headers)).json()["data"]
+    # Bank 1,000,000 - 30,000; card owed 50,000 - 30,000 - 5,000.
+    assert report["total_assets_minor"] == 970000
+    assert report["total_liabilities_minor"] == 15000
+    assert report["net_worth_minor"] == 955000
+
+    trend = report["trend"]
+    trend_by_month = {p["month"]: p["net_worth_minor"] for p in trend}
+    assert trend_by_month[two_months_ago.isoformat()] == 1000000  # before the purchase
+    assert trend_by_month[last_month.isoformat()] == 950000  # repayment month: no swing
+    assert trend[-1]["net_worth_minor"] == 950000  # this month opens before the refund
+    assert all(p["net_worth_minor"] == 1000000 for p in trend[:-3])
