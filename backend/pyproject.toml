@@ -58,6 +58,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # pattern, not the mutable-default-argument bug this rule targets.
 ignore = ["B008"]
 
+[tool.ruff.lint.per-file-ignores]
+"migrations/versions/*.py" = ["E501", "I", "UP"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
