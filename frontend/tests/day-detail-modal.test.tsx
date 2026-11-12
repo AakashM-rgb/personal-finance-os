@@ -50,6 +50,8 @@ function buildTransaction(overrides: Partial<Transaction>): Transaction {
     occurred_at: "2026-09-10T14:30:00Z",
     is_recurring: false,
     recurring_transaction_id: null,
+    linked_account_id: null,
+    needs_review: false,
     created_at: "2026-09-10T14:30:00Z",
     updated_at: "2026-09-10T14:30:00Z",
     ...overrides,

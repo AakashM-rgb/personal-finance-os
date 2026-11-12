@@ -18,11 +18,13 @@ import {
 } from "@/lib/accounts";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
+import { useLedgerVersion } from "@/lib/ledger-events";
 
 type ModalState = { mode: "create" } | { mode: "edit"; account: Account } | null;
 
 export default function AccountsPage() {
   const { accessToken } = useAuth();
+  const ledgerVersion = useLedgerVersion();
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [modalState, setModalState] = useState<ModalState>(null);
@@ -46,7 +48,7 @@ export default function AccountsPage() {
     return () => {
       isMounted = false;
     };
-  }, [accessToken, reloadToken]);
+  }, [accessToken, reloadToken, ledgerVersion]);
 
   async function handleCreate(input: AccountCreateInput | AccountUpdateInput) {
     if (!accessToken) return;

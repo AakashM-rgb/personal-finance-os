@@ -7,10 +7,13 @@ import { FormError } from "@/components/ui/form-error";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { ApiError } from "@/lib/api-client";
 import type { Budget, BudgetCreateInput, BudgetSuggestion, BudgetUpdateInput } from "@/lib/budgets";
 import type { Category } from "@/lib/categories";
+import { toFormErrors } from "@/lib/form-errors";
 import { minorUnitsToInputValue, parseMoneyToMinorUnits } from "@/lib/money";
+
+/** Backend field -> the inline error slot this form renders for it. */
+const API_FIELD_SLOTS: Record<string, string> = { amount_minor: "amount", category_id: "category_id" };
 
 interface BudgetFormProps {
   budget?: Budget;
@@ -60,12 +63,9 @@ export function BudgetForm({
         await onSubmit({ category_id: categoryId, amount_minor: amountMinor });
       }
     } catch (err) {
-      if (err instanceof ApiError) {
-        setFieldErrors(err.fieldErrors ?? {});
-        if (!err.fieldErrors) setError(err.message);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      const { fieldErrors: apiFieldErrors, formError } = toFormErrors(err, API_FIELD_SLOTS);
+      setFieldErrors(apiFieldErrors);
+      setError(formError);
     } finally {
       setIsSubmitting(false);
     }

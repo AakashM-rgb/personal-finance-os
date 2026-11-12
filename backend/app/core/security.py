@@ -35,10 +35,14 @@ class TokenType(StrEnum):
     PASSWORD_RESET = "password_reset"
 
 
-def create_access_token(user_id: UUID) -> str:
+def create_access_token(user_id: UUID, session_family_id: UUID) -> str:
+    """`sid` is the session FAMILY id, never a single session row's: every
+    refresh replaces the row, and a token bound to the row would die on each
+    rotation - including the ones other tabs sharing the cookie trigger."""
     now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": str(user_id),
+        "sid": str(session_family_id),
         "type": TokenType.ACCESS.value,
         "iat": now,
         "exp": now + timedelta(minutes=settings.access_token_expire_minutes),

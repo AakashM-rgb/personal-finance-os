@@ -6,9 +6,17 @@ import { Button } from "@/components/ui/button";
 import { FormError } from "@/components/ui/form-error";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError } from "@/lib/api-client";
+import { toFormErrors } from "@/lib/form-errors";
 import type { SavingsGoal, SavingsGoalCreateInput, SavingsGoalUpdateInput } from "@/lib/goals";
 import { minorUnitsToInputValue, parseMoneyToMinorUnits } from "@/lib/money";
+
+/** Backend field -> the inline error slot this form renders for it. */
+const API_FIELD_SLOTS: Record<string, string> = {
+  name: "name",
+  target_amount_minor: "target_amount_minor",
+  current_amount_minor: "current_amount_minor",
+  target_date: "target_date",
+};
 
 interface GoalFormProps {
   goal?: SavingsGoal;
@@ -86,12 +94,9 @@ export function GoalForm({ goal, onSubmit, onCancel }: GoalFormProps) {
         });
       }
     } catch (err) {
-      if (err instanceof ApiError) {
-        setFieldErrors(err.fieldErrors ?? {});
-        if (!err.fieldErrors) setError(err.message);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      const { fieldErrors: apiFieldErrors, formError } = toFormErrors(err, API_FIELD_SLOTS);
+      setFieldErrors(apiFieldErrors);
+      setError(formError);
     } finally {
       setIsSubmitting(false);
     }

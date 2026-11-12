@@ -10,6 +10,7 @@ const BASE_SETTINGS: UserSettings = {
   currency: "INR",
   theme: "system",
   ai_enabled: true,
+  ai_categorization_enabled: false,
   notification_preferences: {
     budget_warnings: true,
     payment_reminders: true,

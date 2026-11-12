@@ -2,7 +2,16 @@
 the financial calendar, and reports so "this month" (or any other month)
 means exactly the same thing everywhere in the app. Pure date arithmetic,
 no rounding ambiguity, so sharing it carries none of the regression risk
-a shared *money-rounding* formula would."""
+a shared *money-rounding* formula would.
+
+Timezone: every boundary is a UTC instant, matching how `occurred_at` is
+stored (timestamptz) and how the SQL aggregates bucket rows (date_trunc
+pinned to 'UTC'; see app.repositories.transaction_repository). v1 has no
+per-user timezone setting, so for a user in IST (UTC+5:30) a transaction
+recorded between 00:00 and 05:29 local time on the 1st falls into the
+previous month. That is consistent across the dashboard, budgets,
+analytics, the calendar, and reports, because they all derive their
+ranges from this module."""
 
 import calendar
 from datetime import UTC, datetime
@@ -32,6 +41,8 @@ def days_in_month(now: datetime) -> int:
 
 
 def days_elapsed_in_month(now: datetime, this_month_start: datetime) -> int:
+    """Counts today as elapsed, so the result is always >= 1 within the
+    month. That makes it a safe divisor for daily-average projections."""
     return (now.date() - this_month_start.date()).days + 1
 
 

@@ -19,6 +19,13 @@ export interface Transaction {
   occurred_at: string;
   is_recurring: boolean;
   recurring_transaction_id: string | null;
+  /** Set only for a transaction imported by the automatic sync feature
+   * (see lib/sync.ts) - null for every manual, recurring-generated, or
+   * receipt-derived transaction. */
+  linked_account_id: string | null;
+  /** True only for a low-confidence synced transaction awaiting user
+   * review - see backend app.models.transaction. Always false otherwise. */
+  needs_review: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -38,7 +45,14 @@ export interface TransactionInput {
   is_recurring?: boolean;
 }
 
-export type TransactionUpdateInput = Partial<TransactionInput> & { clear_category?: boolean };
+export type TransactionUpdateInput = Partial<TransactionInput> & {
+  clear_category?: boolean;
+  /** Opt-in only - persists the transaction's (merchant, category) pair as
+   * a reusable rule (see lib/merchant-rules.ts) applied to future synced
+   * transactions from the same merchant. Never set unless the user
+   * explicitly asked to remember it on this specific edit. */
+  remember_category_for_merchant?: boolean;
+};
 
 export interface TransactionFilters {
   q?: string;

@@ -14,6 +14,7 @@ import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import { listCategories, type Category } from "@/lib/categories";
 import { getDashboard, type Dashboard } from "@/lib/dashboard";
+import { useLedgerVersion } from "@/lib/ledger-events";
 import { formatMoney } from "@/lib/money";
 
 function greeting(): string {
@@ -25,6 +26,7 @@ function greeting(): string {
 
 export default function DashboardPage() {
   const { accessToken, user } = useAuth();
+  const ledgerVersion = useLedgerVersion();
 
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [accounts, setAccounts] = useState<Account[] | null>(null);
@@ -59,7 +61,7 @@ export default function DashboardPage() {
     return () => {
       isMounted = false;
     };
-  }, [accessToken, reloadToken]);
+  }, [accessToken, reloadToken, ledgerVersion]);
 
   const isLoading = dashboard === null && !error;
 

@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
-
 import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/form-error";
 import type { Account } from "@/lib/accounts";
 import type { Category } from "@/lib/categories";
 import { formatMoney } from "@/lib/money";
 import type { Transaction } from "@/lib/transactions";
+import { useAsyncAction, useConfirmableAction } from "@/lib/use-confirmable-action";
 
 interface TransactionRowProps {
   transaction: Transaction;
@@ -41,18 +41,15 @@ export function TransactionRow({
   onDuplicate,
   onDelete,
 }: TransactionRowProps) {
-  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
-  const [isBusy, setIsBusy] = useState(false);
-
-  async function handleConfirmDelete() {
-    setIsBusy(true);
-    try {
-      await onDelete();
-    } finally {
-      setIsBusy(false);
-      setIsConfirmingDelete(false);
-    }
-  }
+  const deleteAction = useConfirmableAction(
+    onDelete,
+    "Couldn't delete this transaction. Please try again."
+  );
+  const duplicateAction = useAsyncAction(
+    onDuplicate,
+    "Couldn't duplicate this transaction. Please try again."
+  );
+  const actionError = deleteAction.error ?? duplicateAction.error;
 
   const date = new Date(transaction.occurred_at);
 
@@ -78,6 +75,16 @@ export function TransactionRow({
                 Recurring
               </span>
             )}
+            {transaction.linked_account_id && (
+              <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                🔄 Auto-synced
+              </span>
+            )}
+            {transaction.needs_review && (
+              <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                Needs review
+              </span>
+            )}
           </p>
           <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
             {date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
@@ -97,15 +104,15 @@ export function TransactionRow({
       </p>
 
       <div className="flex gap-1">
-        {isConfirmingDelete ? (
+        {deleteAction.isConfirming ? (
           <>
-            <Button variant="secondary" onClick={() => setIsConfirmingDelete(false)}>
+            <Button variant="secondary" onClick={deleteAction.cancel}>
               Cancel
             </Button>
             <Button
               className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
-              isLoading={isBusy}
-              onClick={() => void handleConfirmDelete()}
+              isLoading={deleteAction.isPending}
+              onClick={() => void deleteAction.confirm()}
             >
               Confirm
             </Button>
@@ -115,15 +122,25 @@ export function TransactionRow({
             <Button variant="ghost" onClick={onEdit}>
               Edit
             </Button>
-            <Button variant="ghost" onClick={() => void onDuplicate()}>
+            <Button
+              variant="ghost"
+              isLoading={duplicateAction.isPending}
+              onClick={() => void duplicateAction.run()}
+            >
               Duplicate
             </Button>
-            <Button variant="ghost" onClick={() => setIsConfirmingDelete(true)}>
+            <Button variant="ghost" onClick={deleteAction.start}>
               Delete
             </Button>
           </>
         )}
       </div>
+
+      {actionError && (
+        <div className="basis-full">
+          <FormError message={actionError} />
+        </div>
+      )}
     </div>
   );
 }

@@ -3,6 +3,13 @@ account-balance ledger updates every create/update/delete/duplicate must
 apply atomically and in the same spirit as the rest of the app - reads
 never trust a caller-supplied user_id, only the authenticated one passed in
 by the route layer.
+
+`update_transaction`'s `remember_category_for_merchant` flag
+(TransactionUpdate) is the opt-in path a user's manual category correction
+becomes a persistent app.services.merchant_rule_service rule, applied by
+app.services.sync_service to every future synced transaction from the same
+merchant. It is never automatic - a plain category edit never creates or
+touches a rule.
 """
 
 import uuid
@@ -24,6 +31,7 @@ from app.schemas.transaction import (
     TransactionUpdate,
 )
 from app.services import account_service
+from app.services.merchant_rule_service import upsert_rule
 from app.services.quick_add_parser import parse_quick_add_text
 
 
@@ -40,6 +48,20 @@ async def _validate_shape(
     transaction_type: TransactionType,
     category_id: uuid.UUID | None,
 ) -> tuple[Account, Account | None]:
+    """The one place a transaction's shape is validated, on create, update,
+    and duplicate alike. Ownership comes first: both accounts are resolved
+    through resolve_active_account, which is scoped by `user_id`, so a
+    transfer can never move money into or out of another user's account,
+    even if the caller guesses a valid account id.
+
+    Transfer rules (the ck_transactions_transfer_shape CHECK constraint is
+    the database-level backstop for the first and last):
+    - a transfer needs a distinct, active, same-currency destination account
+      (v1 never converts between currencies);
+    - a transfer never has a category, because it is neither income nor
+      expense and must not show up in any category total;
+    - a non-transfer never has a destination account.
+    """
     account = await account_service.resolve_active_account(
         db, user_id=user_id, account_id=account_id, field="account_id"
     )
@@ -131,6 +153,9 @@ async def create_transaction(
     data: TransactionCreate,
     idempotency_key: str | None,
     recurring_transaction_id: uuid.UUID | None = None,
+    linked_account_id: uuid.UUID | None = None,
+    external_transaction_id: str | None = None,
+    needs_review: bool = False,
 ) -> TransactionRead:
     """`recurring_transaction_id` is never accepted from the request body
     (TransactionCreate has no such field) - it is only ever passed by
@@ -138,7 +163,15 @@ async def create_transaction(
     occurrence, so a caller can never forge a link to another user's
     schedule. Every generated occurrence goes through this exact function,
     so it gets the same validation and account-balance effect as a
-    manually-created transaction - never a second, divergent code path."""
+    manually-created transaction - never a second, divergent code path.
+
+    `linked_account_id`/`external_transaction_id`/`needs_review` are the
+    same kind of caller-only extension: never accepted from the request
+    body, only ever passed by app.services.sync_service when importing an
+    external transaction, so every synced transaction goes through this
+    exact same validation and balance-effect path too - there is no
+    second, divergent way a synced transaction's amount ends up on the
+    ledger."""
     txn_repo = TransactionRepository(db)
 
     if idempotency_key:
@@ -172,6 +205,9 @@ async def create_transaction(
         is_recurring=data.is_recurring or recurring_transaction_id is not None,
         idempotency_key=idempotency_key,
         recurring_transaction_id=recurring_transaction_id,
+        linked_account_id=linked_account_id,
+        external_transaction_id=external_transaction_id,
+        needs_review=needs_review,
     )
     txn_repo.add(transaction)
     try:
@@ -225,6 +261,16 @@ async def create_transaction(
 async def update_transaction(
     db: AsyncSession, *, user_id: uuid.UUID, transaction_id: uuid.UUID, data: TransactionUpdate
 ) -> TransactionRead:
+    """Partial update: a field left as None in `data` keeps its current
+    value. Because None already means "unchanged", clearing a category needs
+    the separate explicit `clear_category` flag.
+
+    Balances are corrected by fully reversing the old transaction's effect,
+    then applying the new one, instead of computing a delta. That single
+    rule covers every kind of edit (amount, account, type, or expense to
+    transfer) without a per-case formula. Validation runs before either
+    balance adjustment, so a rejected edit leaves every balance untouched.
+    """
     txn_repo = TransactionRepository(db)
     transaction = await txn_repo.get_by_id_for_user(transaction_id, user_id)
     if transaction is None:
@@ -299,6 +345,25 @@ async def update_transaction(
         transaction.is_recurring = data.is_recurring
 
     await txn_repo.flush()
+
+    if data.remember_category_for_merchant:
+        if new_category_id is None:
+            raise ValidationAppError(
+                "Choose a category before asking to remember it for this merchant.",
+                field_errors={"remember_category_for_merchant": "no category"},
+            )
+        if not transaction.merchant:
+            raise ValidationAppError(
+                "This transaction has no merchant to remember a category for.",
+                field_errors={"remember_category_for_merchant": "no merchant"},
+            )
+        await upsert_rule(
+            db,
+            user_id=user_id,
+            raw_merchant=transaction.merchant,
+            category_id=new_category_id,
+        )
+
     return _to_read(transaction)
 
 

@@ -56,6 +56,7 @@ async def _clean_database() -> AsyncGenerator[None, None]:
         # with user_id IS NULL are never touched because NULL never matches
         # a cascade-delete condition.
         await conn.execute(text("DELETE FROM audit_logs"))
+        await conn.execute(text("DELETE FROM login_failures"))
         await conn.execute(text("DELETE FROM users"))
 
 

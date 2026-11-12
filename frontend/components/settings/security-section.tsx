@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { ChangePasswordForm } from "@/components/settings/change-password-form";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { FormError } from "@/components/ui/form-error";
@@ -85,7 +86,7 @@ export function SecuritySection({ accessToken }: { accessToken: string }) {
       <div>
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Security</h2>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-          Devices currently signed in to your account.
+          Your password and the devices currently signed in to your account.
         </p>
       </div>
 
@@ -118,6 +119,10 @@ export function SecuritySection({ accessToken }: { accessToken: string }) {
           )}
         </ul>
       )}
+
+      <div className="border-t border-zinc-100 pt-4 dark:border-zinc-800">
+        <ChangePasswordForm />
+      </div>
 
       <div className="border-t border-zinc-100 pt-4 dark:border-zinc-800">
         <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-50">Log out everywhere</h3>

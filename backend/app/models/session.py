@@ -6,6 +6,13 @@ here is what makes "logout from all devices" work server-side; rotation-reuse
 detection (app.services.auth_service.refresh_session) revokes every row for a
 user the moment an already-revoked token is presented again with a matching
 secret - see that function's docstring for why.
+
+`family_id` groups one login's chain of rotated sessions: a login (or a
+password change) starts a family, and each refresh's replacement row inherits
+it. Access tokens carry the family id as their `sid` claim and are only
+honored while the family still has a live row (see
+app.auth.dependencies.get_current_user) - so revoking a session cuts off its
+access tokens at once, while rotation itself never does.
 """
 
 import uuid
@@ -33,6 +40,7 @@ class Session(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
     )
     refresh_token_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    family_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
 
     user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)

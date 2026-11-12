@@ -9,8 +9,15 @@ import { Card } from "@/components/ui/card";
 import { FormError } from "@/components/ui/form-error";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
+import { toFormErrors } from "@/lib/form-errors";
+
+/** Backend field -> the inline error slot this form renders for it. */
+const API_FIELD_SLOTS: Record<string, string> = {
+  email: "email",
+  password: "password",
+  full_name: "full_name",
+};
 
 export default function RegisterPage() {
   const { register } = useAuth();
@@ -32,12 +39,9 @@ export default function RegisterPage() {
       await register({ email, password, full_name: fullName });
       router.push("/dashboard");
     } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.fieldErrors ? null : err.message);
-        setFieldErrors(err.fieldErrors ?? {});
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      const { fieldErrors: apiFieldErrors, formError } = toFormErrors(err, API_FIELD_SLOTS);
+      setFieldErrors(apiFieldErrors);
+      setError(formError);
     } finally {
       setIsSubmitting(false);
     }

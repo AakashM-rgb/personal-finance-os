@@ -13,9 +13,10 @@ import { Card } from "@/components/ui/card";
 import { Modal } from "@/components/ui/modal";
 import { Skeleton } from "@/components/ui/skeleton";
 import { listAccounts, type Account } from "@/lib/accounts";
-import { ApiError } from "@/lib/api-client";
+import { getErrorMessage } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import { listCategories, type Category } from "@/lib/categories";
+import { useLedgerVersion } from "@/lib/ledger-events";
 import {
   createTransaction,
   deleteTransaction,
@@ -45,12 +46,15 @@ const QUICK_ACTIONS: { type: TransactionType; label: string }[] = [
 
 export default function TransactionsPage() {
   const { accessToken } = useAuth();
+  const ledgerVersion = useLedgerVersion();
 
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [categories, setCategories] = useState<Category[] | null>(null);
   const [transactions, setTransactions] = useState<Transaction[] | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [referenceError, setReferenceError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [modalState, setModalState] = useState<ModalState>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [isSmartSearchActive, setIsSmartSearchActive] = useState(false);
@@ -66,17 +70,22 @@ export default function TransactionsPage() {
   useEffect(() => {
     if (!accessToken) return;
     let isMounted = true;
-    void Promise.all([listAccounts(accessToken), listCategories(accessToken)]).then(
-      ([accountsData, categoriesData]) => {
+    void Promise.all([listAccounts(accessToken), listCategories(accessToken)])
+      .then(([accountsData, categoriesData]) => {
         if (!isMounted) return;
         setAccounts(accountsData);
         setCategories(categoriesData);
-      }
-    );
+        setReferenceError(null);
+      })
+      .catch((err) => {
+        if (isMounted) {
+          setReferenceError(getErrorMessage(err, "Failed to load your accounts and categories."));
+        }
+      });
     return () => {
       isMounted = false;
     };
-  }, [accessToken, reloadToken]);
+  }, [accessToken, reloadToken, ledgerVersion]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -90,18 +99,19 @@ export default function TransactionsPage() {
         setError(null);
       })
       .catch((err) => {
-        if (isMounted) setError(err instanceof ApiError ? err.message : "Failed to load transactions.");
+        if (isMounted) setError(getErrorMessage(err, "Failed to load transactions."));
       });
 
     return () => {
       isMounted = false;
     };
-  }, [accessToken, filters, reloadToken]);
+  }, [accessToken, filters, reloadToken, ledgerVersion]);
 
   async function handleCreate(input: TransactionInput | TransactionUpdateInput) {
     if (!accessToken) return;
     await createTransaction(accessToken, input as TransactionInput);
     setModalState(null);
+    setNotice("Transaction added.");
     reload();
   }
 
@@ -109,24 +119,28 @@ export default function TransactionsPage() {
     if (!accessToken) return;
     await updateTransaction(accessToken, transactionId, input as TransactionUpdateInput);
     setModalState(null);
+    setNotice("Changes saved.");
     reload();
   }
 
   async function handleDelete(transactionId: string) {
     if (!accessToken) return;
     await deleteTransaction(accessToken, transactionId);
+    setNotice("Transaction deleted.");
     reload();
   }
 
   async function handleDuplicate(transactionId: string) {
     if (!accessToken) return;
     await duplicateTransaction(accessToken, transactionId);
+    setNotice("Transaction duplicated with today's date.");
     reload();
   }
 
   const accountsById = new Map((accounts ?? []).map((a) => [a.id, a]));
   const categoriesById = new Map((categories ?? []).map((c) => [c.id, c]));
-  const isLoading = accounts === null || categories === null || transactions === null;
+  const isLoading =
+    !referenceError && (accounts === null || categories === null || transactions === null);
 
   return (
     <div className="flex flex-col gap-6">
@@ -176,6 +190,35 @@ export default function TransactionsPage() {
             />
           )}
         </>
+      )}
+
+      {notice && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300"
+        >
+          {notice}
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            className="font-medium underline"
+            aria-label="Dismiss message"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {referenceError && (
+        <div
+          role="alert"
+          className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400"
+        >
+          {referenceError}{" "}
+          <button type="button" onClick={reload} className="font-medium underline">
+            Try again
+          </button>
+        </div>
       )}
 
       {!isSmartSearchActive && error && (

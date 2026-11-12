@@ -24,6 +24,28 @@ constraint on (recurring_transaction_id, occurred_at) is the database-level
 half of the recurring-generation idempotency guarantee described in
 CLAUDE.md §4 - Postgres treats multiple NULLs as distinct, so ordinary
 (non-generated) transactions never collide with each other on it.
+
+`linked_account_id`/`external_transaction_id` link a transaction back to the
+`LinkedAccount` (see app.models.linked_account) and provider-side identifier
+it was ingested from, for a future automatic-sync feature. As with the
+recurring-generation pair above, the actual create-time idempotency
+guarantee for synced transactions is expected to reuse the existing
+`idempotency_key` mechanism above (e.g. a key derived from the linked
+account and external transaction id); the partial unique index on these two
+columns is a defense-in-depth backstop, not the primary mechanism, and never
+applies to ordinary (non-synced) transactions since it only covers rows
+where `linked_account_id IS NOT NULL`.
+
+`needs_review` is the sync pipeline's confidence signal (see
+app.services.sync_service): a low-confidence synced transaction is still
+created immediately (never held back or guessed at), with `category_id`
+left NULL (the existing Uncategorized convention - see
+app.services.category_service) and this flag set True so a later phase's
+review-queue UI can surface it. It is always False for every manual,
+recurring-generated, and receipt-derived transaction. The partial index
+below exists for that future review-queue query
+(`WHERE user_id = ? AND needs_review = true`); most rows never need review,
+so indexing only the True rows keeps it small.
 """
 
 import enum
@@ -40,6 +62,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -76,6 +99,24 @@ class Transaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "recurring_transaction_id",
             "occurred_at",
             name="uq_transactions_recurring_occurrence",
+        ),
+        # Defense-in-depth backstop for synced transactions - see the module
+        # docstring. Postgres partial indexes never evaluate NULLs against
+        # the predicate, so ordinary (non-synced) transactions are entirely
+        # unaffected by this constraint.
+        Index(
+            "uq_transactions_linked_account_external_id",
+            "linked_account_id",
+            "external_transaction_id",
+            unique=True,
+            postgresql_where=text("linked_account_id IS NOT NULL"),
+        ),
+        # The future sync review-queue's access path - see the module
+        # docstring. A partial index (most transactions never need review).
+        Index(
+            "ix_transactions_user_needs_review",
+            "user_id",
+            postgresql_where=text("needs_review = true"),
         ),
     )
 
@@ -123,3 +164,16 @@ class Transaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # Lets offline/PWA clients safely retry a create without double-booking it.
     idempotency_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Automatic sync provenance - see the module docstring. Both remain NULL
+    # for every manual, recurring-generated, and receipt-derived transaction.
+    linked_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("linked_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    external_transaction_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    needs_review: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )

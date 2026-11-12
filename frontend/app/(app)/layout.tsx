@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
+import { SessionUnavailable } from "@/components/auth/session-unavailable";
 import { MobileBottomNav } from "@/components/nav/mobile-bottom-nav";
 import { SyncStatusIndicator } from "@/components/nav/sync-status-indicator";
 import { NotificationBell } from "@/components/notifications/notification-bell";
@@ -28,22 +29,33 @@ const NAV_ITEMS = [
 ];
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, isLoading, logout, accessToken } = useAuth();
+  const { user, isLoading, logout, accessToken, connectionIssue, retrySessionRestore } = useAuth();
   const router = useRouter();
   const offlineSync = useOfflineSync(user?.id ?? null, accessToken);
+  const isUnreachable = connectionIssue === "unreachable";
 
   useEffect(() => {
-    if (!isLoading && !user) {
+    // An unreachable server says nothing about the session - only redirect
+    // once the session is known to be absent.
+    if (!isLoading && !user && !isUnreachable) {
       router.replace("/login");
     }
-  }, [isLoading, user, router]);
+  }, [isLoading, user, isUnreachable, router]);
 
   if (isLoading) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading your account…</p>
+      <div className="flex flex-1 items-center justify-center p-4">
+        <p role="status" className="text-center text-sm text-zinc-500 dark:text-zinc-400">
+          {connectionIssue === "waking"
+            ? "Waking up the server. This can take up to a minute after a quiet period…"
+            : "Loading your account…"}
+        </p>
       </div>
     );
+  }
+
+  if (!user && isUnreachable) {
+    return <SessionUnavailable onRetry={retrySessionRestore} />;
   }
 
   if (!user) {

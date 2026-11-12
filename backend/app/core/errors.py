@@ -56,6 +56,15 @@ class ConflictError(AppError):
     code = "conflict"
 
 
+class RateLimitedError(AppError):
+    """A limit enforced by application logic (as opposed to slowapi's
+    per-IP decorators, whose RateLimitExceeded has its own handler below).
+    Shares that handler's error code so clients treat both alike."""
+
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    code = "rate_limited"
+
+
 def _envelope(code: str, message: str, field_errors: dict[str, Any] | None = None) -> dict:
     error = {"code": code, "message": message, "field_errors": field_errors}
     return {"data": None, "error": error, "meta": None}

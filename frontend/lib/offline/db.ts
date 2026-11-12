@@ -12,13 +12,18 @@
  * record without a matching userId - callers always pass the id from
  * useAuth(), never a value read back out of storage itself. No access
  * token, refresh token, or other secret is ever written here - only
- * transaction-shaped financial draft data and queued operation payloads.
+ * transaction-shaped financial draft data, queued operation payloads, and
+ * the minimal account/category labels the Add Expense sheet needs to work
+ * offline (never balances or any other account detail).
  */
 
 const DB_NAME = "finance-app-offline";
-const DB_VERSION = 1;
+// v2 adds STORE_REFERENCE. Upgrades only ever create missing stores, so an
+// existing user's drafts and queued (not yet synced) expenses survive it.
+const DB_VERSION = 2;
 const STORE_DRAFTS = "drafts";
 const STORE_QUEUE = "syncQueue";
+const STORE_REFERENCE = "referenceData";
 
 export type SyncStatus = "pending" | "syncing" | "synced" | "failed" | "needs_attention";
 
@@ -65,6 +70,18 @@ export interface ExpenseDraft {
   updatedAt: string;
 }
 
+/** The last-known accounts/categories for one user, so expense entry still
+ * works offline. Only labels and ids - enough to pick an account and
+ * category - plus the currency, which decides how an amount is parsed. */
+export interface ReferenceDataSnapshot {
+  userId: string;
+  accounts: { id: string; name: string; currency: string }[];
+  categories: { id: string; name: string; icon: string }[];
+  recentAccountIds: string[];
+  recentCategoryIds: string[];
+  updatedAt: string;
+}
+
 let dbPromise: Promise<IDBDatabase> | null = null;
 
 function isIndexedDBAvailable(): boolean {
@@ -86,9 +103,21 @@ function openDb(): Promise<IDBDatabase> {
         const store = db.createObjectStore(STORE_QUEUE, { keyPath: "id" });
         store.createIndex("byUser", "userId", { unique: false });
       }
+      if (!db.objectStoreNames.contains(STORE_REFERENCE)) {
+        db.createObjectStore(STORE_REFERENCE, { keyPath: "userId" });
+      }
     };
 
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      // Let a newer version of the app (another tab) upgrade the database
+      // instead of being blocked by this connection; the next call reopens.
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
     request.onerror = () => reject(request.error);
     request.onblocked = () => reject(new Error("IndexedDB upgrade blocked by another tab."));
   });
@@ -152,6 +181,22 @@ export async function deleteDraft(userId: string): Promise<void> {
   const tx = db.transaction(STORE_DRAFTS, "readwrite");
   tx.objectStore(STORE_DRAFTS).delete(userId);
   await transactionComplete(tx);
+}
+
+// --- reference data (accounts/categories for offline entry) ----------------
+
+export async function saveReferenceData(snapshot: ReferenceDataSnapshot): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(STORE_REFERENCE, "readwrite");
+  tx.objectStore(STORE_REFERENCE).put(snapshot);
+  await transactionComplete(tx);
+}
+
+export async function getReferenceData(userId: string): Promise<ReferenceDataSnapshot | null> {
+  const db = await openDb();
+  const tx = db.transaction(STORE_REFERENCE, "readonly");
+  const result = await requestToPromise(tx.objectStore(STORE_REFERENCE).get(userId));
+  return (result as ReferenceDataSnapshot | undefined) ?? null;
 }
 
 // --- sync queue ---------------------------------------------------------------

@@ -24,7 +24,7 @@ interface PreferencesSectionProps {
 
 /**
  * Each preference saves independently the moment it changes - these are
- * three unrelated toggles, not one multi-field record, so there is no
+ * unrelated toggles, not one multi-field record, so there is no
  * "unsaved changes" state to batch behind a single Save button. Every
  * change is optimistic and reverts itself (including, for theme, undoing
  * the already-applied visual change) if the PATCH fails.
@@ -41,6 +41,12 @@ export function PreferencesSection({ accessToken, settings }: PreferencesSection
   const [aiEnabled, setAiEnabled] = useState(settings.ai_enabled);
   const [aiError, setAiError] = useState<string | null>(null);
   const [isSavingAi, setIsSavingAi] = useState(false);
+
+  const [aiCategorizationEnabled, setAiCategorizationEnabled] = useState(
+    settings.ai_categorization_enabled
+  );
+  const [aiCategorizationError, setAiCategorizationError] = useState<string | null>(null);
+  const [isSavingAiCategorization, setIsSavingAiCategorization] = useState(false);
 
   async function handleCurrencyChange(event: React.ChangeEvent<HTMLSelectElement>) {
     const previous = currency;
@@ -95,6 +101,24 @@ export function PreferencesSection({ accessToken, settings }: PreferencesSection
       setAiError(err instanceof ApiError ? err.message : "Failed to save AI setting.");
     } finally {
       setIsSavingAi(false);
+    }
+  }
+
+  async function handleAiCategorizationToggle(event: React.ChangeEvent<HTMLInputElement>) {
+    const previous = aiCategorizationEnabled;
+    const next = event.target.checked;
+    setAiCategorizationEnabled(next);
+    setAiCategorizationError(null);
+    setIsSavingAiCategorization(true);
+    try {
+      await updateSettings(accessToken, { ai_categorization_enabled: next });
+    } catch (err) {
+      setAiCategorizationEnabled(previous);
+      setAiCategorizationError(
+        err instanceof ApiError ? err.message : "Failed to save AI categorization setting."
+      );
+    } finally {
+      setIsSavingAiCategorization(false);
     }
   }
 
@@ -159,6 +183,24 @@ export function PreferencesSection({ accessToken, settings }: PreferencesSection
           transactions, budgets, or goals.
         </p>
         <FormError message={aiError} />
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label className="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
+          <input
+            type="checkbox"
+            checked={aiCategorizationEnabled}
+            onChange={(e) => void handleAiCategorizationToggle(e)}
+            disabled={isSavingAiCategorization}
+          />
+          Let AI suggest categories for synced transactions
+        </label>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          When enabled, transactions your bank sync can&apos;t categorize automatically may be
+          sent to an AI provider to suggest a category. Off by default, and separate from the AI
+          assistant setting above - your own merchant rules always take priority.
+        </p>
+        <FormError message={aiCategorizationError} />
       </div>
     </Card>
   );
