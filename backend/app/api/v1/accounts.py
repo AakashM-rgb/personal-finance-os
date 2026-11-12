@@ -3,7 +3,7 @@ own accounts via app.services.account_service."""
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
@@ -52,11 +52,17 @@ async def get_account(
 async def update_account(
     account_id: UUID,
     body: AccountUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     account = await account_service.update_account(
-        db, user_id=current_user.id, account_id=account_id, data=body
+        db,
+        user_id=current_user.id,
+        account_id=account_id,
+        data=body,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
     )
     await db.commit()
     return {"data": account, "error": None, "meta": None}

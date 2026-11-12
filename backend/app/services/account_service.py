@@ -11,6 +11,7 @@ from app.models.account import Account, AccountType
 from app.models.credit_card_details import CreditCardDetails
 from app.repositories.account_repository import AccountRepository
 from app.schemas.account import AccountCreate, AccountRead, AccountUpdate, CreditCardDetailsRead
+from app.services.audit_service import log_action
 from app.services.ledger_calculations import is_liability
 
 
@@ -148,8 +149,18 @@ async def create_account(
 
 
 async def update_account(
-    db: AsyncSession, *, user_id: uuid.UUID, account_id: uuid.UUID, data: AccountUpdate
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    account_id: uuid.UUID,
+    data: AccountUpdate,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
 ) -> AccountRead:
+    """A balance set here bypasses the transaction ledger, so every actual
+    change is audit-logged with the previous and new value. Ledger
+    corrections (e.g. the F-001 credit-card balance migration) rely on that
+    trail to tell a user's intended balance from a ledger-derived one."""
     repo = AccountRepository(db)
     account = await repo.get_by_id_for_user(account_id, user_id)
     if account is None:
@@ -157,7 +168,21 @@ async def update_account(
 
     if data.name is not None:
         account.name = data.name
-    if data.balance_minor is not None:
+    if data.balance_minor is not None and data.balance_minor != account.balance_minor:
+        await log_action(
+            db,
+            user_id=user_id,
+            action="account.balance_updated",
+            entity_type="account",
+            entity_id=str(account.id),
+            ip_address=ip_address,
+            user_agent=user_agent,
+            metadata={
+                "account_type": account.type.value,
+                "previous_balance_minor": account.balance_minor,
+                "new_balance_minor": data.balance_minor,
+            },
+        )
         account.balance_minor = data.balance_minor
     if data.currency is not None:
         account.currency = data.currency
