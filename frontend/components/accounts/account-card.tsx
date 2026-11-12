@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
-
 import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/form-error";
 import { Card } from "@/components/ui/card";
 import { ACCOUNT_TYPE_LABELS, type Account } from "@/lib/accounts";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import { useConfirmableAction } from "@/lib/use-confirmable-action";
 
 const ACCOUNT_TYPE_ICONS: Record<Account["type"], string> = {
   bank_account: "🏦",
@@ -24,23 +24,15 @@ interface AccountCardProps {
 }
 
 export function AccountCard({ account, onEdit, onDelete }: AccountCardProps) {
-  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const confirmAction = useConfirmableAction(
+    onDelete,
+    "Couldn't delete this account. Please try again."
+  );
 
   const creditCard = account.credit_card;
   const utilization = creditCard?.utilization_percent ?? 0;
   const utilizationLevel =
     utilization >= 90 ? "high" : utilization >= 70 ? "medium" : "low";
-
-  async function handleConfirmDelete() {
-    setIsDeleting(true);
-    try {
-      await onDelete();
-    } finally {
-      setIsDeleting(false);
-      setIsConfirmingDelete(false);
-    }
-  }
 
   return (
     <Card className="flex flex-col gap-3">
@@ -96,16 +88,16 @@ export function AccountCard({ account, onEdit, onDelete }: AccountCardProps) {
       )}
 
       <div className="mt-1 flex justify-end gap-2">
-        {isConfirmingDelete ? (
+        {confirmAction.isConfirming ? (
           <>
-            <Button variant="secondary" onClick={() => setIsConfirmingDelete(false)}>
+            <Button variant="secondary" onClick={confirmAction.cancel}>
               Cancel
             </Button>
             <Button
               variant="primary"
               className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
-              isLoading={isDeleting}
-              onClick={() => void handleConfirmDelete()}
+              isLoading={confirmAction.isPending}
+              onClick={() => void confirmAction.confirm()}
             >
               Confirm delete
             </Button>
@@ -115,12 +107,13 @@ export function AccountCard({ account, onEdit, onDelete }: AccountCardProps) {
             <Button variant="ghost" onClick={onEdit}>
               Edit
             </Button>
-            <Button variant="ghost" onClick={() => setIsConfirmingDelete(true)}>
+            <Button variant="ghost" onClick={confirmAction.start}>
               Delete
             </Button>
           </>
         )}
       </div>
+      <FormError message={confirmAction.error} />
     </Card>
   );
 }

@@ -25,6 +25,14 @@ class Settings(BaseSettings):
 
     cors_origins: str = Field(alias="CORS_ORIGINS")
 
+    # Unset (the default): the refresh and CSRF cookies are host-only, which
+    # is correct when the frontend and API share a hostname (local dev:
+    # localhost:3000 and localhost:8000). A deployment serving them from
+    # sibling subdomains (app.example.com / api.example.com) sets this to the
+    # shared parent domain, because the frontend's JavaScript must be able to
+    # read the CSRF cookie to restore a session (see app.auth.cookies).
+    cookie_domain: str | None = Field(default=None, alias="COOKIE_DOMAIN")
+
     login_rate_limit: str = Field(alias="LOGIN_RATE_LIMIT")
     register_rate_limit: str = Field(alias="REGISTER_RATE_LIMIT")
     # /refresh and /logout are cookie-authenticated (never brute-forceable -
@@ -34,6 +42,15 @@ class Settings(BaseSettings):
     # write per call, so they're bounded against abuse/resource exhaustion
     # the same way. Defaults generously above real per-tab/device traffic.
     refresh_rate_limit: str = Field(default="60/minute", alias="REFRESH_RATE_LIMIT")
+    # Per-account login throttle (app.services.login_throttle), alongside the
+    # per-IP LOGIN_RATE_LIMIT: an account that collects this many failed
+    # logins within the window refuses further attempts until the oldest
+    # failure ages out - a sliding window, never a permanent lockout. Kept in
+    # PostgreSQL, so it holds across workers, instances, and restarts.
+    login_account_max_failures: int = Field(default=10, alias="LOGIN_ACCOUNT_MAX_FAILURES", gt=0)
+    login_account_window_minutes: int = Field(
+        default=15, alias="LOGIN_ACCOUNT_WINDOW_MINUTES", gt=0
+    )
 
     # Receipt storage/OCR: every one of these is optional by design (CLAUDE.md
     # "never hard-depend on infra that isn't actually provisioned") - absent
@@ -54,6 +71,34 @@ class Settings(BaseSettings):
 
     # Natural-Language Financial Search.
     search_rate_limit: str = Field(default="30/minute", alias="SEARCH_RATE_LIMIT")
+
+    # Automatic transaction sync: no real Account Aggregator vendor is wired
+    # up yet - only the seam (see app.sync.provider.factory). Absent config
+    # means the deterministic mock provider, never a startup failure and
+    # never a pretend call to an external bank/AA service.
+    sync_provider: str = Field(default="mock", alias="SYNC_PROVIDER")
+    sync_link_rate_limit: str = Field(default="10/minute", alias="SYNC_LINK_RATE_LIMIT")
+    sync_trigger_rate_limit: str = Field(default="20/minute", alias="SYNC_TRIGGER_RATE_LIMIT")
+    # Per-IP limit on the unauthenticated Setu notification webhook
+    # (app.api.v1.setu_notifications) - abuse protection only.
+    setu_notification_rate_limit: str = Field(
+        default="120/minute", alias="SETU_NOTIFICATION_RATE_LIMIT"
+    )
+
+    # Setu sandbox Account Aggregator adapter (Phase F8) - SANDBOX/UAT ONLY,
+    # never a production credential. Only read when SYNC_PROVIDER=setu_sandbox;
+    # absent by default, same as every other optional integration in this
+    # app - selecting this provider can never require these to be set, since
+    # app.sync.provider.setu_sandbox.SetuSandboxSyncProvider makes no real
+    # request yet (see that module's own docstring for why). Field names are
+    # a placeholder shape (client_id/client_secret) - confirm the exact
+    # credential fields Setu's live API reference actually requires before
+    # any real implementation.
+    setu_sandbox_base_url: str | None = Field(default=None, alias="SETU_SANDBOX_BASE_URL")
+    setu_sandbox_client_id: str | None = Field(default=None, alias="SETU_SANDBOX_CLIENT_ID")
+    setu_sandbox_client_secret: str | None = Field(
+        default=None, alias="SETU_SANDBOX_CLIENT_SECRET"
+    )
 
     @property
     def cors_origin_list(self) -> list[str]:

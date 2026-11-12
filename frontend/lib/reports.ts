@@ -1,4 +1,4 @@
-import { apiRequest } from "@/lib/api-client";
+import { apiFetchBlob, apiRequest } from "@/lib/api-client";
 import type { Budget } from "@/lib/budgets";
 import type { AnalyticsRange, TrendInfo } from "@/lib/analytics";
 import type { SavingsGoal } from "@/lib/goals";
@@ -275,8 +275,9 @@ export type ExportFormat = "csv" | "xlsx" | "pdf";
 /**
  * Downloads a report export by fetching it with the caller's auth token
  * (export endpoints require the same Authorization header as every other
- * API call) and saving the resulting file client-side - a plain <a href>
- * link can't carry the auth header, so the fetch happens here instead.
+ * API call, sent through the shared client so an expired session is
+ * recovered) and saving the resulting file client-side - a plain <a href>
+ * link can't carry the auth header.
  */
 export async function downloadReportExport(
   accessToken: string,
@@ -284,14 +285,7 @@ export async function downloadReportExport(
   format: ExportFormat,
   filenameBase: string
 ): Promise<void> {
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!response.ok) {
-    throw new Error("Failed to generate the export.");
-  }
-  const blob = await response.blob();
+  const blob = await apiFetchBlob(path, accessToken);
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;

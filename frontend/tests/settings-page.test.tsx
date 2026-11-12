@@ -32,6 +32,10 @@ function mockAuthed() {
     login: vi.fn(),
     logout: vi.fn(),
     logoutAll: vi.fn(),
+    changePassword: vi.fn(),
+    sessionExpired: false,
+    connectionIssue: null,
+    retrySessionRestore: vi.fn(),
   });
 }
 
@@ -59,6 +63,7 @@ describe("SettingsPage", () => {
       currency: "INR",
       theme: "system",
       ai_enabled: true,
+      ai_categorization_enabled: false,
       notification_preferences: {
         budget_warnings: true,
         payment_reminders: true,
@@ -116,11 +121,16 @@ describe("SettingsPage", () => {
       login: vi.fn(),
       logout: vi.fn(),
       logoutAll: vi.fn(),
+      changePassword: vi.fn(),
+      sessionExpired: false,
+      connectionIssue: null,
+      retrySessionRestore: vi.fn(),
     });
     vi.spyOn(settingsLib, "getSettings").mockResolvedValue({
       currency: "INR",
       theme: "system",
       ai_enabled: true,
+      ai_categorization_enabled: false,
       notification_preferences: {
         budget_warnings: true,
         payment_reminders: true,

@@ -27,6 +27,23 @@ class UserRepository:
         await self._db.flush()
         return user
 
+    async def get_by_id_for_update(self, user_id: uuid.UUID) -> User | None:
+        """Row-locks the user until the transaction ends and re-reads it from
+        the database, overwriting any copy already in the session's identity
+        map - so a caller checking the password sees the latest committed
+        hash, never one loaded before a concurrent change committed."""
+        result = await self._db.execute(
+            select(User)
+            .where(User.id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def update_password_hash(self, user: User, password_hash: str) -> None:
+        user.password_hash = password_hash
+        await self._db.flush()
+
     async def list_all_ids(self) -> list[uuid.UUID]:
         """Every user's id, active or not - used only by
         app.services.notification_service's system-wide generation sweep,

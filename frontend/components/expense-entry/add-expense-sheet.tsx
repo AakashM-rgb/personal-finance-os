@@ -6,17 +6,30 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
-import { type Account, listAccounts } from "@/lib/accounts";
-import { ApiError } from "@/lib/api-client";
+import { Skeleton } from "@/components/ui/skeleton";
+import { listAccounts } from "@/lib/accounts";
+import { ApiError, getErrorMessage } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
-import { type Category, listCategories } from "@/lib/categories";
-import { deleteDraft, getDraft, isOfflineStorageAvailable, saveDraft } from "@/lib/offline/db";
+import { listCategories } from "@/lib/categories";
+import { notifyLedgerChanged } from "@/lib/ledger-events";
+import {
+  deleteDraft,
+  getDraft,
+  getReferenceData,
+  isOfflineStorageAvailable,
+  type ReferenceDataSnapshot,
+  saveDraft,
+  saveReferenceData,
+} from "@/lib/offline/db";
 import { queueOfflineExpense } from "@/lib/offline/sync-queue";
 import { parseMoneyToMinorUnits } from "@/lib/money";
 import { createTransaction, listTransactions } from "@/lib/transactions";
 
 const DRAFT_SAVE_DEBOUNCE_MS = 400;
 const RECENT_LIMIT = 6;
+
+type SheetAccount = ReferenceDataSnapshot["accounts"][number];
+type SheetCategory = ReferenceDataSnapshot["categories"][number];
 
 interface AddExpenseSheetProps {
   onClose: () => void;
@@ -35,8 +48,13 @@ export function AddExpenseSheet({ onClose, onCreated }: AddExpenseSheetProps) {
   const amountInputRef = useRef<HTMLInputElement>(null);
   const idempotencyKeyRef = useRef<string>(crypto.randomUUID());
 
-  const [accounts, setAccounts] = useState<Account[] | null>(null);
-  const [categories, setCategories] = useState<Category[] | null>(null);
+  const [accounts, setAccounts] = useState<SheetAccount[] | null>(null);
+  const [categories, setCategories] = useState<SheetCategory[] | null>(null);
+  const [isUsingSavedData, setIsUsingSavedData] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const draftCheckedRef = useRef(false);
+  const isMountedRef = useRef(true);
   const [recentCategoryIds, setRecentCategoryIds] = useState<string[]>([]);
   const [recentAccountIds, setRecentAccountIds] = useState<string[]>([]);
 
@@ -54,12 +72,31 @@ export function AddExpenseSheet({ onClose, onCreated }: AddExpenseSheetProps) {
   const [savedOffline, setSavedOffline] = useState(false);
 
   // Load accounts/categories + derive "recently used" from real transaction
-  // history only - never a guessed/fabricated default.
+  // history only - never a guessed/fabricated default. The last successful
+  // load is kept on this device, so the sheet still opens (and can queue the
+  // expense) when the network is down; fresh data always wins over it.
   useEffect(() => {
-    if (!accessToken) return;
+    if (!accessToken || !user) return;
     let isMounted = true;
+    let hasFreshData = false;
 
-    void Promise.all([
+    function apply(snapshot: Omit<ReferenceDataSnapshot, "userId" | "updatedAt">) {
+      setAccounts(snapshot.accounts);
+      setCategories(snapshot.categories);
+      setRecentCategoryIds(snapshot.recentCategoryIds);
+      setRecentAccountIds(snapshot.recentAccountIds);
+      // Set the default account as soon as data is available - never wait
+      // on the separate (also async) draft-lookup below just to make the
+      // form usable; that effect only OVERRIDES this if a draft actually
+      // named a different account.
+      setAccountId(
+        (current) => current || snapshot.recentAccountIds[0] || snapshot.accounts[0]?.id || ""
+      );
+    }
+
+    const savedSnapshot = getReferenceData(user.id).catch(() => null);
+
+    Promise.all([
       listAccounts(accessToken),
       listCategories(accessToken),
       listTransactions(accessToken, {
@@ -68,58 +105,86 @@ export function AddExpenseSheet({ onClose, onCreated }: AddExpenseSheetProps) {
         sort_dir: "desc",
         limit: 30,
       }),
-    ]).then(([accountsData, categoriesData, recent]) => {
-      if (!isMounted) return;
-      setAccounts(accountsData);
-      setCategories(categoriesData);
+    ])
+      .then(([accountsData, categoriesData, recent]) => {
+        if (!isMounted) return;
+        hasFreshData = true;
 
-      const recentCats: string[] = [];
-      const recentAccs: string[] = [];
-      for (const transaction of recent.transactions) {
-        if (transaction.category_id && !recentCats.includes(transaction.category_id)) {
-          recentCats.push(transaction.category_id);
+        const recentCats: string[] = [];
+        const recentAccs: string[] = [];
+        for (const transaction of recent.transactions) {
+          if (transaction.category_id && !recentCats.includes(transaction.category_id)) {
+            recentCats.push(transaction.category_id);
+          }
+          if (!recentAccs.includes(transaction.account_id)) {
+            recentAccs.push(transaction.account_id);
+          }
         }
-        if (!recentAccs.includes(transaction.account_id)) {
-          recentAccs.push(transaction.account_id);
+        const snapshot = {
+          accounts: accountsData.map(({ id, name, currency }) => ({ id, name, currency })),
+          categories: categoriesData.map(({ id, name, icon }) => ({ id, name, icon })),
+          recentCategoryIds: recentCats.slice(0, RECENT_LIMIT),
+          recentAccountIds: recentAccs.slice(0, RECENT_LIMIT),
+        };
+        apply(snapshot);
+        setIsUsingSavedData(false);
+        setLoadError(null);
+        void saveReferenceData({
+          ...snapshot,
+          userId: user.id,
+          updatedAt: new Date().toISOString(),
+        }).catch(() => undefined);
+      })
+      .catch(async (err: unknown) => {
+        const saved = await savedSnapshot;
+        if (!isMounted || hasFreshData) return;
+        if (saved) {
+          apply(saved);
+          setIsUsingSavedData(true);
+          return;
         }
-      }
-      setRecentCategoryIds(recentCats.slice(0, RECENT_LIMIT));
-      setRecentAccountIds(recentAccs.slice(0, RECENT_LIMIT));
-      // Set the default account as soon as data is available - never wait
-      // on the separate (also async) draft-lookup below just to make the
-      // form usable; that effect only OVERRIDES this if a draft actually
-      // named a different account.
-      setAccountId((current) => current || recentAccs[0] || accountsData[0]?.id || "");
-    });
+        setLoadError(
+          navigator.onLine
+            ? getErrorMessage(err, "Couldn't load your accounts. Please try again.")
+            : "You're offline, and your accounts haven't been saved on this device yet. Connect to the internet once, and you'll be able to add expenses offline after that."
+        );
+      });
 
     return () => {
       isMounted = false;
     };
-  }, [accessToken]);
+  }, [accessToken, user, loadAttempt]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // Restore any saved draft for this user, once accounts have loaded so a
-  // default account choice doesn't clobber it.
+  // default account choice doesn't clobber it. Runs once per sheet: saved
+  // accounts may be replaced by fresh ones a moment later, and that must
+  // never re-apply the draft over what the user has typed since.
   useEffect(() => {
-    if (!user || accounts === null) return;
-    let isMounted = true;
-    void getDraft(user.id).then((draft) => {
-      if (!isMounted || !draft) {
-        if (isMounted) {
+    if (!user || accounts === null || draftCheckedRef.current) return;
+    draftCheckedRef.current = true;
+    void getDraft(user.id)
+      .catch(() => null)
+      .then((draft) => {
+        if (!isMountedRef.current) return;
+        if (!draft) {
           setAccountId((current) => current || recentAccountIds[0] || accounts[0]?.id || "");
+          return;
         }
-        return;
-      }
-      setAmountInput(draft.amountInput);
-      setCategoryId(draft.categoryId ?? "");
-      setAccountId(draft.accountId ?? recentAccountIds[0] ?? accounts[0]?.id ?? "");
-      setMerchant(draft.merchant);
-      setNote(draft.note);
-      if (draft.merchant || draft.note) setShowDetails(true);
-      setDraftRestored(true);
-    });
-    return () => {
-      isMounted = false;
-    };
+        setAmountInput(draft.amountInput);
+        setCategoryId(draft.categoryId ?? "");
+        setAccountId(draft.accountId ?? recentAccountIds[0] ?? accounts[0]?.id ?? "");
+        setMerchant(draft.merchant);
+        setNote(draft.note);
+        if (draft.merchant || draft.note) setShowDetails(true);
+        setDraftRestored(true);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once accounts arrive, not on every recentAccountIds change
   }, [user, accounts]);
 
@@ -178,7 +243,10 @@ export function AddExpenseSheet({ onClose, onCreated }: AddExpenseSheetProps) {
       setError("Choose an account.");
       return;
     }
-    const amountMinor = parseMoneyToMinorUnits(amountInput);
+    // Parse in the chosen account's currency: e.g. JPY has no minor unit, so
+    // "100" must be 100, not 10000.
+    const currency = accounts?.find((a) => a.id === accountId)?.currency;
+    const amountMinor = parseMoneyToMinorUnits(amountInput, currency);
     if (amountMinor === null || amountMinor <= 0) {
       setError("Enter a valid amount greater than 0.");
       return;
@@ -221,6 +289,9 @@ export function AddExpenseSheet({ onClose, onCreated }: AddExpenseSheetProps) {
 
     try {
       await createTransaction(accessToken, payload, idempotencyKey);
+      // Confirmed by the server - refresh whatever page is open underneath.
+      // (A queued offline expense notifies once it actually syncs instead.)
+      notifyLedgerChanged();
       await deleteDraft(user.id).catch(() => undefined);
       onCreated();
     } catch (err) {
@@ -239,13 +310,36 @@ export function AddExpenseSheet({ onClose, onCreated }: AddExpenseSheetProps) {
     }
   }
 
-  const isLoading = accounts === null || categories === null;
+  const isLoading = !loadError && (accounts === null || categories === null);
 
   return (
     <Modal title="Add expense" onClose={onClose}>
-      {isLoading && <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>}
+      {isLoading && (
+        <div className="flex flex-col gap-3">
+          <span className="sr-only">Loading your accounts…</span>
+          <Skeleton className="h-16" />
+          <Skeleton className="h-10" />
+          <Skeleton className="h-10" />
+        </div>
+      )}
 
-      {!isLoading && (
+      {loadError && (
+        <div className="flex flex-col gap-4">
+          <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+            {loadError}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose}>
+              Close
+            </Button>
+            <Button type="button" onClick={() => setLoadAttempt((n) => n + 1)}>
+              Try again
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {!isLoading && !loadError && (
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -253,6 +347,12 @@ export function AddExpenseSheet({ onClose, onCreated }: AddExpenseSheetProps) {
           }}
           className="flex flex-col gap-4"
         >
+          {isUsingSavedData && (
+            <p role="status" className="text-xs text-zinc-600 dark:text-zinc-400">
+              You&apos;re offline - showing the accounts and categories saved on this device.
+            </p>
+          )}
+
           {draftRestored && (
             <div className="flex items-center justify-between rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
               <span>Continuing your unsaved draft.</span>
@@ -349,7 +449,7 @@ export function AddExpenseSheet({ onClose, onCreated }: AddExpenseSheetProps) {
                 {[...recentAccountIds, ...accounts.map((a) => a.id)]
                   .filter((id, index, all) => all.indexOf(id) === index)
                   .map((id) => accounts.find((a) => a.id === id))
-                  .filter((a): a is Account => a != null)
+                  .filter((a): a is SheetAccount => a != null)
                   .map((account) => (
                     <option key={account.id} value={account.id}>
                       {account.name}

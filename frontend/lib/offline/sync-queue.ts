@@ -24,6 +24,7 @@
  */
 
 import { ApiError } from "@/lib/api-client";
+import { notifyLedgerChanged } from "@/lib/ledger-events";
 import { createTransaction } from "@/lib/transactions";
 import {
   enqueueTransaction,
@@ -191,7 +192,8 @@ async function syncOne(
     // created (or, on a replayed Idempotency-Key, the original) transaction.
     await removeQueuedTransaction(userId, item.id);
     notifyChanged(userId);
-    void transaction; // server id isn't needed locally - the transactions list already reflects it
+    notifyLedgerChanged();
+    void transaction; // server id isn't needed locally - views refetch via notifyLedgerChanged
     return false;
   } catch (err) {
     return await handleSyncFailure(userId, item, err);

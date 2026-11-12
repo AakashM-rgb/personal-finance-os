@@ -21,7 +21,6 @@ from app.core.errors import ConflictError, NotFoundError, ValidationAppError
 from app.models.category import Category
 from app.models.receipt import Receipt, ReceiptStatus
 from app.models.transaction import TransactionType
-from app.ocr.category_suggestion import suggest_category_name
 from app.ocr.factory import get_ocr_provider
 from app.repositories.category_repository import CategoryRepository
 from app.repositories.receipt_repository import ReceiptRepository
@@ -36,6 +35,7 @@ from app.schemas.receipt import (
 )
 from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.services import category_service, transaction_service
+from app.services.keyword_categorization import suggest_category_name
 from app.storage.base import generate_storage_key
 from app.storage.factory import get_storage_provider
 

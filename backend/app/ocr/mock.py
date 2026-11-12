@@ -58,7 +58,7 @@ def _confidence(
 
 class MockOcrProvider:
     """Category suggestion is deliberately NOT computed here - see
-    app.ocr.category_suggestion, called by app.services.receipt_service
+    app.services.keyword_categorization, called by app.services.receipt_service
     with the caller's real category list, since a provider has no
     business knowing which categories exist for a given user."""
 

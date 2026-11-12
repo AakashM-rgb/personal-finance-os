@@ -13,7 +13,7 @@ import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, sessionExpired } = useAuth();
   const router = useRouter();
 
   const [email, setEmail] = useState("");
@@ -43,6 +43,15 @@ export default function LoginPage() {
       <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
         Log in to see how your money is doing.
       </p>
+
+      {sessionExpired && (
+        <p
+          role="status"
+          className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300"
+        >
+          Your session expired. Please log in again to continue.
+        </p>
+      )}
 
       <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">

@@ -33,6 +33,10 @@ describe("SecuritySection", () => {
       login: vi.fn(),
       logout: vi.fn(),
       logoutAll: vi.fn(),
+      changePassword: vi.fn(),
+      sessionExpired: false,
+      connectionIssue: null,
+      retrySessionRestore: vi.fn(),
     });
     vi.spyOn(sessionsLib, "listSessions").mockResolvedValue([
       {
@@ -59,6 +63,10 @@ describe("SecuritySection", () => {
       login: vi.fn(),
       logout: vi.fn(),
       logoutAll: vi.fn(),
+      changePassword: vi.fn(),
+      sessionExpired: false,
+      connectionIssue: null,
+      retrySessionRestore: vi.fn(),
     });
     vi.spyOn(sessionsLib, "listSessions").mockRejectedValue(
       new ApiError(500, { code: "internal_error", message: "Failed to load sessions.", field_errors: null })
@@ -79,6 +87,10 @@ describe("SecuritySection", () => {
       login: vi.fn(),
       logout: vi.fn(),
       logoutAll,
+      changePassword: vi.fn(),
+      sessionExpired: false,
+      connectionIssue: null,
+      retrySessionRestore: vi.fn(),
     });
     vi.spyOn(sessionsLib, "listSessions").mockResolvedValue([]);
 
@@ -108,6 +120,10 @@ describe("SecuritySection", () => {
       login: vi.fn(),
       logout: vi.fn(),
       logoutAll,
+      changePassword: vi.fn(),
+      sessionExpired: false,
+      connectionIssue: null,
+      retrySessionRestore: vi.fn(),
     });
     vi.spyOn(sessionsLib, "listSessions").mockResolvedValue([]);
 

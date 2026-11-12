@@ -19,6 +19,7 @@ import type { AnalyticsRange } from "@/lib/analytics";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import { listCategories, type Category } from "@/lib/categories";
+import { useLedgerVersion } from "@/lib/ledger-events";
 import {
   downloadReportExport,
   getBudgetReport,
@@ -58,6 +59,7 @@ function todayIso(): string {
 
 export default function ReportsPage() {
   const { accessToken } = useAuth();
+  const ledgerVersion = useLedgerVersion();
   const now = new Date();
 
   const [reportType, setReportType] = useState<ReportType>("monthly");
@@ -81,14 +83,17 @@ export default function ReportsPage() {
   useEffect(() => {
     if (!accessToken) return;
     let isMounted = true;
-    void Promise.all([listAccounts(accessToken), listCategories(accessToken)]).then(
-      ([accountsData, categoriesData]) => {
+    void Promise.all([listAccounts(accessToken), listCategories(accessToken)])
+      .then(([accountsData, categoriesData]) => {
         if (isMounted) {
           setAccounts(accountsData);
           setCategories(categoriesData);
         }
-      }
-    );
+      })
+      // Only used to label rows with account/category names; the report
+      // itself loads (and reports its own failure) independently, so a
+      // failure here must not leave an unhandled rejection or block it.
+      .catch(() => {});
     return () => {
       isMounted = false;
     };
@@ -140,7 +145,18 @@ export default function ReportsPage() {
     return () => {
       isMounted = false;
     };
-  }, [accessToken, reportType, year, month, range, customFrom, customTo, isCustomIncomplete, reloadToken]);
+  }, [
+    accessToken,
+    reportType,
+    year,
+    month,
+    range,
+    customFrom,
+    customTo,
+    isCustomIncomplete,
+    reloadToken,
+    ledgerVersion,
+  ]);
 
   async function handleExport(format: ExportFormat) {
     if (!accessToken) return;

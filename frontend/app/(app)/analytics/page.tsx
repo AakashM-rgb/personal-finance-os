@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getAnalytics, type Analytics, type AnalyticsRange } from "@/lib/analytics";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
+import { useLedgerVersion } from "@/lib/ledger-events";
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -21,6 +22,7 @@ function todayIso(): string {
 
 export default function AnalyticsPage() {
   const { accessToken } = useAuth();
+  const ledgerVersion = useLedgerVersion();
 
   const [range, setRange] = useState<AnalyticsRange>("current_month");
   const [customFrom, setCustomFrom] = useState(todayIso());
@@ -53,7 +55,7 @@ export default function AnalyticsPage() {
       isMounted = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken, range, customFrom, customTo, reloadToken]);
+  }, [accessToken, range, customFrom, customTo, reloadToken, ledgerVersion]);
 
   const isLoading = data === null && !error && !isCustomIncomplete;
 

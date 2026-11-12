@@ -7,10 +7,13 @@ import { FormError } from "@/components/ui/form-error";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { ApiError } from "@/lib/api-client";
 import type { Category } from "@/lib/categories";
+import { toFormErrors } from "@/lib/form-errors";
 import { minorUnitsToInputValue, parseMoneyToMinorUnits } from "@/lib/money";
 import type { Receipt, ReceiptConfirmInput, ReceiptItem } from "@/lib/receipts";
+
+/** Backend field -> the inline error slot this form renders for it. */
+const API_FIELD_SLOTS: Record<string, string> = { total_minor: "total_minor", tax_minor: "tax_minor" };
 
 const NO_CATEGORY = "__none__";
 
@@ -114,12 +117,9 @@ export function ReceiptReviewForm({ receipt, categories, onSubmit }: ReceiptRevi
     try {
       await onSubmit(input);
     } catch (err) {
-      if (err instanceof ApiError) {
-        setFieldErrors(err.fieldErrors ?? {});
-        if (!err.fieldErrors) setError(err.message);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      const { fieldErrors: apiFieldErrors, formError } = toFormErrors(err, API_FIELD_SLOTS);
+      setFieldErrors(apiFieldErrors);
+      setError(formError);
     } finally {
       setIsSubmitting(false);
     }

@@ -48,6 +48,13 @@ class TransactionRepository:
     def _base_query(
         self, user_id: uuid.UUID, filters: TransactionFilters
     ) -> list[ColumnExpressionArgument[bool]]:
+        """WHERE conditions for the transaction list. The `user_id` predicate
+        is always first and never conditional, so no combination of filters
+        can widen the query past the caller's own rows.
+
+        Unlike the aggregate methods below, which use a half-open
+        [date_from, date_to) range, `date_to` here is inclusive: it comes
+        straight from the user's "to" filter in the transaction list."""
         conditions: list[ColumnExpressionArgument[bool]] = [Transaction.user_id == user_id]
 
         if filters.search:
@@ -62,6 +69,8 @@ class TransactionRepository:
         if filters.category_id is not None:
             conditions.append(Transaction.category_id == filters.category_id)
         if filters.account_id is not None:
+            # Matches both legs of a transfer, so an account's history shows
+            # money moving in as well as out.
             conditions.append(
                 or_(
                     Transaction.account_id == filters.account_id,

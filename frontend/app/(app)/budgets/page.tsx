@@ -22,11 +22,13 @@ import {
   type BudgetUpdateInput,
 } from "@/lib/budgets";
 import { listCategories, type Category } from "@/lib/categories";
+import { useLedgerVersion } from "@/lib/ledger-events";
 
 type ModalState = { mode: "create" } | { mode: "edit"; budget: Budget } | null;
 
 export default function BudgetsPage() {
   const { accessToken } = useAuth();
+  const ledgerVersion = useLedgerVersion();
 
   const [budgets, setBudgets] = useState<Budget[] | null>(null);
   const [categories, setCategories] = useState<Category[] | null>(null);
@@ -63,7 +65,7 @@ export default function BudgetsPage() {
     return () => {
       isMounted = false;
     };
-  }, [accessToken, reloadToken]);
+  }, [accessToken, reloadToken, ledgerVersion]);
 
   async function handleCreate(input: BudgetCreateInput | BudgetUpdateInput) {
     if (!accessToken) return;

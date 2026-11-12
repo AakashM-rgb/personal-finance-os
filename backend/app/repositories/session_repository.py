@@ -7,7 +7,7 @@ caller can never revoke or read another user's session by guessing a session id.
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.session import Session
@@ -21,6 +21,7 @@ class SessionRepository:
         self,
         *,
         session_id: uuid.UUID,
+        family_id: uuid.UUID,
         user_id: uuid.UUID,
         refresh_token_hash: str,
         expires_at: datetime,
@@ -29,6 +30,7 @@ class SessionRepository:
     ) -> Session:
         session = Session(
             id=session_id,
+            family_id=family_id,
             user_id=user_id,
             refresh_token_hash=refresh_token_hash,
             expires_at=expires_at,
@@ -52,6 +54,19 @@ class SessionRepository:
             )
         )
         return list(result.scalars().all())
+
+    async def family_has_active_session(self, family_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        result = await self._db.execute(
+            select(
+                exists().where(
+                    Session.family_id == family_id,
+                    Session.user_id == user_id,
+                    Session.revoked_at.is_(None),
+                    Session.expires_at > datetime.now(UTC),
+                )
+            )
+        )
+        return bool(result.scalar_one())
 
     async def get_by_id_for_user(self, session_id: uuid.UUID, user_id: uuid.UUID) -> Session | None:
         result = await self._db.execute(
