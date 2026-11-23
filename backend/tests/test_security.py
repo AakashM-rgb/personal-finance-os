@@ -3,7 +3,9 @@ from datetime import timedelta
 
 import jwt
 import pytest
+from pydantic import ValidationError
 
+from app.core.config import Settings
 from app.core.security import (
     TokenType,
     create_access_token,
@@ -50,3 +52,42 @@ def test_refresh_token_hash_round_trip() -> None:
     assert hashed != raw
     assert verify_refresh_token(raw, hashed) is True
     assert verify_refresh_token("a-different-secret", hashed) is False
+
+
+# --- CORS configuration ------------------------------------------------------------------
+
+def _settings(**overrides: str) -> Settings:
+    base = {
+        "ENVIRONMENT": "production",
+        "DATABASE_URL": "postgresql+asyncpg://u:p@localhost/db",
+        "TEST_DATABASE_URL": "postgresql+asyncpg://u:p@localhost/test",
+        "JWT_SECRET_KEY": "x" * 32,
+        "CORS_ORIGINS": "https://app.example.com",
+    }
+    base.update(overrides)
+    return Settings(**base)  # type: ignore[arg-type]
+
+
+def test_a_wildcard_cors_origin_is_refused_in_production() -> None:
+    """The API is cookie-authenticated with allow_credentials=True, so a
+    wildcard allow-list would let any site make authenticated requests."""
+    with pytest.raises(ValidationError, match="explicit origins in production"):
+        _settings(CORS_ORIGINS="*")
+
+    with pytest.raises(ValidationError, match="explicit origins in production"):
+        _settings(CORS_ORIGINS="https://app.example.com,*")
+
+
+def test_explicit_origins_are_accepted_and_split() -> None:
+    settings = _settings(CORS_ORIGINS="https://a.example.com, https://b.example.com")
+
+    assert settings.cors_origin_list == ["https://a.example.com", "https://b.example.com"]
+
+
+def test_a_wildcard_is_still_allowed_outside_production() -> None:
+    """Local development may legitimately use it; nothing user-facing is
+    exposed by a dev server."""
+    settings = _settings(ENVIRONMENT="development", CORS_ORIGINS="*")
+
+    assert settings.cors_origin_list == ["*"]
+    assert settings.is_production is False

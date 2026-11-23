@@ -1,0 +1,146 @@
+# Exact versions of every runtime dependency, used as a pip *constraints* file
+# so that what CI tests is what Render installs (pyproject.toml has only lower
+# bounds, and a fresh `pip install .` would otherwise pick whatever is newest
+# on the day of the deploy).
+#
+#   CI:      pip install -c requirements.lock -e ".[dev]"
+#   Render:  pip install -c requirements.lock .
+#
+# Regenerate after changing dependencies in pyproject.toml, then run the full
+# test suite and pip-audit before committing:
+#   uv pip compile pyproject.toml --universal --python-version 3.13 --no-header -o requirements.lock
+# (then re-add this header). Universal: the markers cover Linux (Render, CI)
+# and Windows (local development). Resolved for Python 3.13, the only version
+# the project supports (pyproject.toml requires-python, backend/.python-version):
+# some pins, e.g. deprecated 3.x, don't install on 3.11.
+alembic==1.20.1
+    # via finance-app-backend (pyproject.toml)
+annotated-doc==0.0.7
+    # via fastapi
+annotated-types==0.8.0
+    # via pydantic
+anyio==4.16.0
+    # via
+    #   fastapi
+    #   starlette
+    #   watchfiles
+argon2-cffi==25.1.0
+    # via passlib
+argon2-cffi-bindings==26.2.0
+    # via argon2-cffi
+asyncpg==0.32.0
+    # via finance-app-backend (pyproject.toml)
+certifi==2026.11.20
+    # via finance-app-backend (pyproject.toml)
+cffi==2.1.1
+    # via argon2-cffi-bindings
+charset-normalizer==3.5.2
+    # via reportlab
+click==8.5.1
+    # via uvicorn
+deprecated==3.0.1
+    # via limits
+dnspython==2.9.2
+    # via
+    #   finance-app-backend (pyproject.toml)
+    #   email-validator
+email-validator==2.4.0
+    # via finance-app-backend (pyproject.toml)
+et-xmlfile==2.0.0
+    # via openpyxl
+fastapi==0.165.0
+    # via finance-app-backend (pyproject.toml)
+greenlet==3.5.6
+    # via sqlalchemy
+h11==0.16.0
+    # via uvicorn
+httptools==0.9.0
+    # via uvicorn
+idna==3.20
+    # via
+    #   anyio
+    #   email-validator
+limits==5.8.0
+    # via slowapi
+mako==1.4.3
+    # via alembic
+markupsafe==3.0.4
+    # via mako
+openpyxl==3.1.5
+    # via finance-app-backend (pyproject.toml)
+opentelemetry-api==1.45.2
+    # via fastapi
+packaging==26.3
+    # via limits
+passlib==1.7.4
+    # via finance-app-backend (pyproject.toml)
+pillow==13.0.0
+    # via
+    #   finance-app-backend (pyproject.toml)
+    #   reportlab
+psycopg==3.3.9
+    # via finance-app-backend (pyproject.toml)
+psycopg-binary==3.3.9 ; implementation_name != 'pypy'
+    # via psycopg
+pycparser==3.12 ; implementation_name != 'PyPy'
+    # via cffi
+pydantic==2.14.4
+    # via
+    #   finance-app-backend (pyproject.toml)
+    #   fastapi
+    #   pydantic-settings
+pydantic-core==2.50.5
+    # via pydantic
+pydantic-settings==2.16.3
+    # via finance-app-backend (pyproject.toml)
+pyjwt==2.15.1
+    # via finance-app-backend (pyproject.toml)
+pypdf==7.1.1
+    # via finance-app-backend (pyproject.toml)
+python-dotenv==1.2.4
+    # via
+    #   pydantic-settings
+    #   uvicorn
+python-multipart==0.0.34
+    # via finance-app-backend (pyproject.toml)
+pyyaml==6.0.4
+    # via uvicorn
+reportlab==5.1.0
+    # via finance-app-backend (pyproject.toml)
+slowapi==0.1.10
+    # via finance-app-backend (pyproject.toml)
+sqlalchemy==2.1.9
+    # via
+    #   finance-app-backend (pyproject.toml)
+    #   alembic
+starlette==1.10.0
+    # via fastapi
+typing-extensions==4.16.0
+    # via
+    #   alembic
+    #   anyio
+    #   fastapi
+    #   limits
+    #   opentelemetry-api
+    #   pydantic
+    #   pydantic-core
+    #   pydantic-settings
+    #   sqlalchemy
+    #   typing-inspection
+typing-inspection==0.4.5
+    # via
+    #   fastapi
+    #   pydantic
+    #   pydantic-settings
+tzdata==2026.6 ; sys_platform == 'win32'
+    # via psycopg
+uvicorn==0.54.0
+    # via finance-app-backend (pyproject.toml)
+uvloop==0.23.0 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
+    # via uvicorn
+watchfiles==1.3.0
+    # via uvicorn
+websockets==17.4
+    # via uvicorn
+wrapt==2.5.2
+    # via deprecated

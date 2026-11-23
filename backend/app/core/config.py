@@ -6,7 +6,7 @@ falls back to a hardcoded secret or credential.
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -107,6 +107,21 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @model_validator(mode="after")
+    def _reject_wildcard_cors_in_production(self) -> "Settings":
+        """The API is cookie-authenticated with allow_credentials=True (see
+        app.main), and Starlette answers a credentialed request from a
+        wildcard allow-list by echoing back whatever Origin asked. A single
+        `CORS_ORIGINS=*` would therefore let any website on the internet make
+        authenticated requests with the user's session. Refuse it at startup
+        rather than serve it."""
+        if self.is_production and "*" in self.cors_origin_list:
+            raise ValueError(
+                "CORS_ORIGINS must list explicit origins in production; "
+                "'*' would allow any site to make authenticated requests."
+            )
+        return self
 
 
 @lru_cache

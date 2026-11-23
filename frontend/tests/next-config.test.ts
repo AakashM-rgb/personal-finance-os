@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { buildNextConfig, resolveBackendOrigin, resolveClientApiBaseUrl } from "@/next.config";
+import {
+  buildContentSecurityPolicy,
+  buildNextConfig,
+  buildSecurityHeaders,
+  resolveBackendOrigin,
+  resolveClientApiBaseUrl,
+} from "@/next.config";
 
 const BACKEND = "https://personal-finance-os-ug9o.onrender.com";
 
@@ -87,6 +93,7 @@ describe("buildNextConfig", () => {
       { source: "/api/:path*", destination: `${BACKEND}/api/:path*` },
     ]);
     expect(await config.headers!()).toEqual([
+      { source: "/:path*", headers: buildSecurityHeaders({ BACKEND_ORIGIN: BACKEND }, BACKEND) },
       {
         source: "/api/:path*",
         headers: [{ key: "Cache-Control", value: "private, no-store" }],
@@ -94,11 +101,92 @@ describe("buildNextConfig", () => {
     ]);
   });
 
-  it("adds no rewrite or header without BACKEND_ORIGIN (local dev)", async () => {
+  it("adds no rewrite without BACKEND_ORIGIN (local dev), but still sends headers", async () => {
     const config = buildNextConfig({ NEXT_PUBLIC_API_URL: "http://localhost:8000" });
 
     expect(config.env).toEqual({ CLIENT_API_BASE_URL: "http://localhost:8000" });
     expect(await config.rewrites!()).toEqual([]);
-    expect(await config.headers!()).toEqual([]);
+    const headers = await config.headers!();
+    expect(headers).toHaveLength(1);
+    expect(headers[0].source).toBe("/:path*");
+  });
+});
+
+// F-004: the app shipped with no security headers at all.
+describe("buildSecurityHeaders", () => {
+  const keysFor = (env: Record<string, string | undefined>, origin: string | null) =>
+    buildSecurityHeaders(env, origin).map((header) => header.key);
+
+  it("sends every baseline header on every route", () => {
+    const keys = keysFor({ NODE_ENV: "production", BACKEND_ORIGIN: BACKEND }, BACKEND);
+
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        "Content-Security-Policy",
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+        "Referrer-Policy",
+        "Permissions-Policy",
+        "Cross-Origin-Opener-Policy",
+      ])
+    );
+  });
+
+  it("sends HSTS only in production, never from a plain-http dev server", () => {
+    expect(keysFor({ NODE_ENV: "production" }, BACKEND)).toContain("Strict-Transport-Security");
+    expect(keysFor({ NODE_ENV: "development" }, null)).not.toContain("Strict-Transport-Security");
+  });
+
+  it("denies framing and sniffing outright", () => {
+    const headers = buildSecurityHeaders({ NODE_ENV: "production" }, BACKEND);
+    const byKey = Object.fromEntries(headers.map((h) => [h.key, h.value]));
+
+    expect(byKey["X-Frame-Options"]).toBe("DENY");
+    expect(byKey["X-Content-Type-Options"]).toBe("nosniff");
+    expect(byKey["Referrer-Policy"]).toBe("strict-origin-when-cross-origin");
+  });
+});
+
+describe("buildContentSecurityPolicy", () => {
+  const directives = (policy: string) =>
+    Object.fromEntries(
+      policy.split("; ").map((directive) => {
+        const [name, ...values] = directive.split(" ");
+        return [name, values.join(" ")];
+      })
+    );
+
+  it("locks down the dangerous sinks", () => {
+    const d = directives(buildContentSecurityPolicy({ NODE_ENV: "production" }, BACKEND));
+
+    expect(d["default-src"]).toBe("'self'");
+    expect(d["object-src"]).toBe("'none'");
+    expect(d["frame-ancestors"]).toBe("'none'");
+    expect(d["base-uri"]).toBe("'self'");
+    expect(d["form-action"]).toBe("'self'");
+  });
+
+  it("keeps the proxy deployment's connect-src same-origin only", () => {
+    const d = directives(buildContentSecurityPolicy({ NODE_ENV: "production" }, BACKEND));
+
+    expect(d["connect-src"]).toBe("'self'");
+  });
+
+  it("allows the backend in connect-src when the browser calls it directly", () => {
+    const policy = buildContentSecurityPolicy(
+      { NODE_ENV: "production", NEXT_PUBLIC_API_URL: BACKEND },
+      null
+    );
+
+    expect(directives(policy)["connect-src"]).toBe(`'self' ${BACKEND}`);
+  });
+
+  it("never allows eval in a production build", () => {
+    const production = buildContentSecurityPolicy({ NODE_ENV: "production" }, BACKEND);
+    const development = buildContentSecurityPolicy({ NODE_ENV: "development" }, null);
+
+    expect(production).not.toContain("'unsafe-eval'");
+    expect(production).toContain("upgrade-insecure-requests");
+    expect(development).toContain("'unsafe-eval'");
   });
 });

@@ -2,7 +2,7 @@
 name = "finance-app-backend"
 version = "0.1.0"
 description = "Personal Financial Operating System - backend"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",
@@ -13,13 +13,19 @@ dependencies = [
   "asyncpg>=0.30",
   "psycopg[binary]>=3.2,<4",
   "passlib[argon2]>=1.7",
-  "pyjwt>=2.9",
+  "pyjwt>=2.15",
   "slowapi>=0.1.9",
   "email-validator>=2.2",
   "openpyxl>=3.1",
   "reportlab>=4.2",
-  "pypdf>=5.0",
+  "pypdf>=6.21.4",
   "python-multipart>=0.0.12",
+  # Security floors for transitive dependencies (pip-audit, 2026-11-22): Render
+  # installs with a fresh `pip install .` and no lockfile, so a floor here is
+  # the only thing that keeps a known-vulnerable release from being deployed.
+  "pillow>=13.0",  # via reportlab; parses images
+  "dnspython>=2.9.2",  # via email-validator
+  "certifi>=2026.10.18",  # via httpx; CA bundle
 ]
 
 [project.optional-dependencies]
@@ -44,7 +50,7 @@ asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 ignore_missing_imports = true
 disallow_untyped_defs = true
 

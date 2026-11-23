@@ -83,6 +83,88 @@ export function resolveClientApiBaseUrl(env: BuildEnv, backendOrigin: string | n
   return directApiUrl || LOCAL_DEV_API_URL;
 }
 
+/**
+ * Security headers applied to every response.
+ *
+ * The app serves one user's financial data, so the defaults matter: without
+ * these, Next.js sends no CSP, no HSTS, no framing or MIME protection at all.
+ *
+ * `connect-src` has to include the backend when the browser calls it
+ * directly (no proxy); with the proxy on, every request is same-origin and
+ * `'self'` already covers it.
+ *
+ * Known weakness, deliberately accepted: `script-src` allows
+ * `'unsafe-inline'`. Next.js App Router streams its hydration payload through
+ * inline `<script>` tags, and the stricter nonce-based policy is not
+ * available to this app as built -- Next.js injects a nonce only during
+ * server-side rendering, so (per its own CSP guide) "to use a nonce, your
+ * page must be dynamically rendered". Every route here prerenders as static
+ * content, which is why the build output lists them all as `○ (Static)`.
+ * Earning a nonce would mean making all 22 routes dynamic: a real
+ * architectural and performance trade-off, not a config tweak, and one to
+ * decide deliberately rather than in a hardening pass. `'unsafe-inline'`
+ * alongside `object-src 'none'`, `base-uri 'self'`, `frame-ancestors 'none'`
+ * and a locked-down `connect-src` is still far stronger than no policy at
+ * all. `'unsafe-eval'` is dev-only (React Refresh needs it) and never set in
+ * a production build.
+ */
+export function buildContentSecurityPolicy(
+  env: BuildEnv,
+  backendOrigin: string | null
+): string {
+  const isDev = env.NODE_ENV !== "production";
+  const directApi = backendOrigin ? null : env.NEXT_PUBLIC_API_URL?.trim() || LOCAL_DEV_API_URL;
+  const connect = ["'self'", directApi, isDev ? "ws://localhost:*" : null].filter(Boolean);
+  const script = ["'self'", "'unsafe-inline'", isDev ? "'unsafe-eval'" : null].filter(Boolean);
+
+  return [
+    "default-src 'self'",
+    `script-src ${script.join(" ")}`,
+    // Tailwind injects a stylesheet; Next.js also inlines critical CSS.
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    `connect-src ${connect.join(" ")}`,
+    // Receipts are rendered from blob: URLs the app itself creates.
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "frame-src 'none'",
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    ...(isDev ? [] : ["upgrade-insecure-requests"]),
+  ].join("; ");
+}
+
+export function buildSecurityHeaders(
+  env: BuildEnv,
+  backendOrigin: string | null
+): { key: string; value: string }[] {
+  const headers = [
+    { key: "Content-Security-Policy", value: buildContentSecurityPolicy(env, backendOrigin) },
+    { key: "X-Content-Type-Options", value: "nosniff" },
+    // Redundant with frame-ancestors above, kept for older browsers.
+    { key: "X-Frame-Options", value: "DENY" },
+    { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+    {
+      key: "Permissions-Policy",
+      value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    },
+    { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+    { key: "X-DNS-Prefetch-Control", value: "off" },
+  ];
+  // HSTS only where the site is actually served over TLS: sending it from a
+  // plain-http dev server would pin localhost to https in the browser.
+  if (env.NODE_ENV === "production") {
+    headers.push({
+      key: "Strict-Transport-Security",
+      value: "max-age=63072000; includeSubDomains",
+    });
+  }
+  return headers;
+}
+
 export function buildNextConfig(env: BuildEnv): NextConfig {
   const backendOrigin = resolveBackendOrigin(env);
 
@@ -95,10 +177,14 @@ export function buildNextConfig(env: BuildEnv): NextConfig {
       return [{ source: "/api/:path*", destination: `${backendOrigin}/api/:path*` }];
     },
     async headers() {
-      if (!backendOrigin) return [];
+      const headers = [
+        { source: "/:path*", headers: buildSecurityHeaders(env, backendOrigin) },
+      ];
+      if (!backendOrigin) return headers;
       // Proxied responses carry one user's financial data and auth cookies;
       // a shared CDN cache in front of them must never store or replay one.
       return [
+        ...headers,
         {
           source: "/api/:path*",
           headers: [{ key: "Cache-Control", value: "private, no-store" }],
