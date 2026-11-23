@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { ChangePasswordForm } from "@/components/settings/change-password-form";
+import { DeleteAccountForm } from "@/components/settings/delete-account-form";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { FormError } from "@/components/ui/form-error";
@@ -158,6 +159,10 @@ export function SecuritySection({ accessToken }: { accessToken: string }) {
             </Button>
           )}
         </div>
+      </div>
+
+      <div className="border-t border-zinc-100 pt-4 dark:border-zinc-800">
+        <DeleteAccountForm />
       </div>
     </Card>
   );

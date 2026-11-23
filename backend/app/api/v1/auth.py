@@ -1,5 +1,5 @@
 """Authentication endpoints: register, login, refresh, logout, logout-all, me,
-change-password, sessions."""
+change-password, delete-account, sessions."""
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,11 +14,12 @@ from app.models.user import User
 from app.schemas.auth import (
     AccessTokenResponse,
     ChangePasswordRequest,
+    DeleteAccountRequest,
     LoginRequest,
     RegisterRequest,
 )
 from app.schemas.user import UserRead
-from app.services import auth_service
+from app.services import auth_service, receipt_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -127,6 +128,32 @@ async def logout_all(
 ) -> dict:
     await auth_service.logout_all(db, user_id=current_user.id)
     await db.commit()
+    clear_session_cookies(response)
+    return {"data": {"success": True}, "error": None, "meta": None}
+
+
+@router.post("/delete-account", response_model=None)
+@limiter.limit(settings.login_rate_limit)
+async def delete_account(
+    request: Request,
+    body: DeleteAccountRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    ip_address, user_agent = _client_context(request)
+    # Read before the commit: the user row is gone afterwards.
+    user_id = current_user.id
+    storage_keys = await auth_service.delete_account(
+        db,
+        user=current_user,
+        password=body.password,
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+    await db.commit()
+    # Files go only after the rows are gone for good - see delete_account.
+    await receipt_service.delete_stored_files(user_id, storage_keys)
     clear_session_cookies(response)
     return {"data": {"success": True}, "error": None, "meta": None}
 

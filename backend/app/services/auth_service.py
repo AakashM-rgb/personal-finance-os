@@ -30,6 +30,8 @@ from app.core.security import (
 )
 from app.models.session import Session
 from app.models.user import User
+from app.repositories.audit_log_repository import AuditLogRepository
+from app.repositories.receipt_repository import ReceiptRepository
 from app.repositories.session_repository import SessionRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.session import SessionRead
@@ -46,6 +48,9 @@ _THROTTLED_LOGIN_ERROR = (
 
 _THROTTLED_PASSWORD_CHANGE_ERROR = (
     "Too many password change attempts for this account. Please wait a few minutes and try again."
+)
+_THROTTLED_ACCOUNT_DELETION_ERROR = (
+    "Too many attempts to confirm your password. Please wait a few minutes and try again."
 )
 
 
@@ -379,6 +384,74 @@ async def list_active_sessions(db: AsyncSession, *, user_id: uuid.UUID) -> list[
     sessions = await SessionRepository(db).get_active_by_user(user_id)
     sessions.sort(key=lambda s: s.created_at, reverse=True)
     return [SessionRead.model_validate(session) for session in sessions]
+
+
+async def delete_account(
+    db: AsyncSession,
+    *,
+    user: User,
+    password: str,
+    user_agent: str | None,
+    ip_address: str | None,
+) -> list[str]:
+    """Permanently deletes the user and everything they own, after
+    re-checking their password. Returns the storage keys of their receipt
+    files, which the caller deletes only once this transaction has committed
+    - deleting them first would leave a still-existing account without its
+    files if the commit failed.
+
+    Every user-owned table cascades from `users` (docs/DATABASE.md), so one
+    DELETE removes accounts, transactions, sessions, budgets, goals,
+    receipts' rows and the rest. The audit trail survives by design
+    (audit_logs.user_id is SET NULL), but stripped of the user's IP
+    addresses, user agents and metadata first, and the deletion itself is
+    recorded without any of those. Throttle rows derived from the user's
+    email or id are cleared too.
+
+    A wrong password is a 422 on that field and shares the change-password
+    throttle, so a stolen session can neither delete the account nor be used
+    to guess the password."""
+    throttle_key = login_throttle.password_change_key(user.id)
+    if not await login_throttle.acquire(db, throttle_key):
+        # Also what a second, concurrent deletion request gets: acquire never
+        # waits while another attempt for this account holds the lock.
+        await db.commit()
+        raise RateLimitedError(_THROTTLED_ACCOUNT_DELETION_ERROR)
+
+    locked_user = await UserRepository(db).get_by_id_for_update(user.id)
+    if locked_user is None or not locked_user.is_active:
+        raise AuthenticationError("Invalid or expired session. Please log in again.")
+
+    if not verify_password(password, locked_user.password_hash):
+        await login_throttle.record_failure(db, throttle_key)
+        await log_action(
+            db,
+            user_id=locked_user.id,
+            action="user.account_deletion_failed",
+            entity_type="user",
+            entity_id=str(locked_user.id),
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        await db.commit()
+        raise ValidationAppError(
+            "Your password is incorrect.", field_errors={"password": "incorrect"}
+        )
+
+    user_id = locked_user.id
+    storage_keys = await ReceiptRepository(db).list_storage_keys_for_user(user_id)
+    await AuditLogRepository(db).anonymize_for_user(user_id)
+    await login_throttle.clear(db, throttle_key)
+    await login_throttle.clear(db, login_throttle.account_key(locked_user.email))
+    await UserRepository(db).delete(user_id)
+    await log_action(
+        db,
+        user_id=None,
+        action="user.account_deleted",
+        entity_type="user",
+        entity_id=str(user_id),
+    )
+    return storage_keys
 
 
 async def logout_all(db: AsyncSession, *, user_id: uuid.UUID) -> None:

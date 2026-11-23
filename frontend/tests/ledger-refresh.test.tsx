@@ -54,6 +54,7 @@ describe("ledger change signal", () => {
       logout: vi.fn(),
       logoutAll: vi.fn(),
       changePassword: vi.fn(),
+      deleteAccount: vi.fn(),
     });
     const getDashboard = vi
       .spyOn(dashboardLib, "getDashboard")

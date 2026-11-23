@@ -41,6 +41,7 @@ function mockAuthed(userId = USER_ID) {
     logout: vi.fn(),
     logoutAll: vi.fn(),
     changePassword: vi.fn(),
+    deleteAccount: vi.fn(),
     sessionExpired: false,
     connectionIssue: null,
     retrySessionRestore: vi.fn(),

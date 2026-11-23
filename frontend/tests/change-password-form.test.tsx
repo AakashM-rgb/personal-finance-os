@@ -22,6 +22,7 @@ function mockAuth(changePassword: (input: ChangePasswordInput) => Promise<void>)
     logout: vi.fn(),
     logoutAll: vi.fn(),
     changePassword,
+    deleteAccount: vi.fn(),
     sessionExpired: false,
     connectionIssue: null,
     retrySessionRestore: vi.fn(),

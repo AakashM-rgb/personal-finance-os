@@ -9,6 +9,7 @@ nothing here ever copies one into the other automatically. Only
 confirmed_* is ever used to create a transaction.
 """
 
+import logging
 import re
 import uuid
 from dataclasses import asdict
@@ -36,8 +37,10 @@ from app.schemas.receipt import (
 from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.services import category_service, transaction_service
 from app.services.keyword_categorization import suggest_category_name
-from app.storage.base import generate_storage_key
+from app.storage.base import StorageError, generate_storage_key
 from app.storage.factory import get_storage_provider
+
+logger = logging.getLogger(__name__)
 
 _EXTENSION_TO_CONTENT_TYPE = {
     "jpg": "image/jpeg",
@@ -376,6 +379,35 @@ async def delete_receipt(db: AsyncSession, *, user_id: uuid.UUID, receipt_id: uu
     await storage.delete(receipt.storage_key)
     await repo.delete(receipt)
     await repo.flush()
+
+
+async def delete_stored_files(owner_id: uuid.UUID, storage_keys: list[str]) -> int:
+    """Best-effort removal of a deleted user's receipt files, after their rows
+    are gone for good. Returns how many could not be deleted; a failure never
+    stops the rest.
+
+    A failure is logged with the user's id and storage prefix (every key is
+    `<user_id>/...`, see generate_storage_key), which is all an operator needs
+    to find and remove what was left behind. The id is pseudonymous once the
+    user row is gone, and the anonymous `user.account_deleted` audit row
+    already records it."""
+    storage = get_storage_provider()
+    failures = 0
+    for key in storage_keys:
+        try:
+            await storage.delete(key)
+        except StorageError:
+            failures += 1
+    if failures:
+        logger.warning(
+            "Could not delete %d of %d receipt file(s) for deleted user %s; "
+            "remove what remains under storage prefix '%s/'",
+            failures,
+            len(storage_keys),
+            owner_id,
+            owner_id,
+        )
+    return failures
 
 
 async def create_transaction_from_receipt(

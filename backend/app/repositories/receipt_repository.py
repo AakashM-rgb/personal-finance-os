@@ -23,6 +23,12 @@ class ReceiptRepository:
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_storage_keys_for_user(self, user_id: uuid.UUID) -> list[str]:
+        result = await self._db.execute(
+            select(Receipt.storage_key).where(Receipt.user_id == user_id)
+        )
+        return list(result.scalars())
+
     async def get_by_id_for_user(self, receipt_id: uuid.UUID, user_id: uuid.UUID) -> Receipt | None:
         stmt = select(Receipt).where(Receipt.id == receipt_id, Receipt.user_id == user_id)
         result = await self._db.execute(stmt)

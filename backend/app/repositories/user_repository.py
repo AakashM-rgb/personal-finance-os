@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
@@ -39,6 +39,13 @@ class UserRepository:
             .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
+
+    async def delete(self, user_id: uuid.UUID) -> None:
+        """A core DELETE rather than `session.delete(user)`, so the database's
+        own ON DELETE CASCADE / SET NULL rules (docs/DATABASE.md) remove the
+        user's data in one statement. The ORM would instead walk loaded
+        relationships and try to null out NOT NULL foreign keys."""
+        await self._db.execute(delete(User).where(User.id == user_id))
 
     async def update_password_hash(self, user: User, password_hash: str) -> None:
         user.password_hash = password_hash

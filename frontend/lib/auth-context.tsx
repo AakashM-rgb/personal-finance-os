@@ -70,6 +70,10 @@ interface AuthContextValue {
   /** Revokes every session server-side, then adopts the fresh session the
    * backend issues for this device - the caller stays signed in. */
   changePassword: (input: ChangePasswordInput) => Promise<void>;
+  /** Permanently deletes the account after re-checking the password, then
+   * clears the local session. Throws (leaving the session intact) on a wrong
+   * password or any other failure. */
+  deleteAccount: (password: string) => Promise<void>;
 }
 
 export type ConnectionIssue = "waking" | "unreachable";
@@ -303,6 +307,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [accessToken, setToken]
   );
 
+  const deleteAccount = useCallback(
+    async (password: string) => {
+      await apiRequest("/api/v1/auth/delete-account", {
+        method: "POST",
+        body: { password },
+        accessToken,
+      });
+      clearSession();
+    },
+    [accessToken, clearSession]
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -316,6 +332,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       logout,
       logoutAll,
       changePassword,
+      deleteAccount,
     }),
     [
       user,
@@ -329,6 +346,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       logout,
       logoutAll,
       changePassword,
+      deleteAccount,
     ]
   );
 
