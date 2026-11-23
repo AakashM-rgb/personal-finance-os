@@ -119,17 +119,21 @@ async def upsert_rule(
         return _to_read(existing, category)
 
     rule = MerchantCategoryRule(user_id=user_id, merchant_key=merchant_key, category_id=category_id)
-    repo.add(rule)
     try:
-        await repo.flush()
-    except IntegrityError:
         # Genuine race: another request created the same (user_id,
         # merchant_key) rule concurrently between our pre-check and this
         # insert. The database's own unique constraint is what actually
         # prevents the duplicate row; this just turns it into an update
         # instead of a raw 500 - the same idempotent-replay pattern used
         # throughout this app (see transaction_service.create_transaction).
-        await db.rollback()
+        # A SAVEPOINT, so a race here cannot discard the caller's other work:
+        # this runs inside sync ingestion and transaction categorization,
+        # which have already written to `db`. `add` goes inside it so the
+        # rollback undoes the failed insert rather than leaving it pending.
+        async with db.begin_nested():
+            repo.add(rule)
+            await repo.flush()
+    except IntegrityError:
         existing = await repo.get_by_user_and_merchant_key(user_id, merchant_key)
         if existing is None:
             raise

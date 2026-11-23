@@ -21,6 +21,12 @@ router = APIRouter(prefix="/transactions", tags=["transactions"])
 _MAX_PAGE_SIZE = 200
 
 
+def client_idempotency_key(
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> str | None:
+    return transaction_service.validate_client_idempotency_key(idempotency_key)
+
+
 @router.get("", response_model=None)
 async def list_transactions(
     q: str | None = None,
@@ -69,7 +75,7 @@ async def list_transactions(
 @router.post("", response_model=None, status_code=201)
 async def create_transaction(
     body: TransactionCreate,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Depends(client_idempotency_key),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:

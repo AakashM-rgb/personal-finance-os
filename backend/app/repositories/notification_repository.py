@@ -82,14 +82,22 @@ class NotificationRepository:
         reference_id: str | None = None,
         action_url: str | None = None,
     ) -> Notification | None:
-        """Inserts a new notification, or returns None if one with this
-        exact (user_id, dedupe_key) already exists - the real backstop is
-        the database's own unique constraint (uq_notifications_user_dedupe_key),
-        not this pre-check; a concurrent caller racing to create the same
-        notification hits that constraint and is treated as a no-op here,
-        never a raw 500 (same recovery pattern as
-        app.services.transaction_service.create_transaction's own
-        idempotency-key race)."""
+        """Inserts a new notification, or returns None if one with this exact
+        (user_id, dedupe_key) already exists. There is no pre-check SELECT:
+        the database's own unique constraint
+        (uq_notifications_user_dedupe_key) is the only thing deciding, so a
+        concurrent caller racing to create the same notification is a no-op
+        here, never a raw 500.
+
+        The insert runs inside a SAVEPOINT because the duplicate case is the
+        *normal* one, not a rare race: dedupe keys deterministically encode
+        real-world events, so every regeneration run re-attempts the
+        notifications it already created. Rolling back the whole transaction
+        here (as this once did) discarded every notification the earlier
+        detectors in the same request had just created - they were silently
+        lost, and the caller could not tell, because a duplicate and a
+        wiped-out batch both return None. A savepoint undoes only the one
+        failed insert."""
         notification = Notification(
             user_id=user_id,
             category=category,
@@ -100,10 +108,13 @@ class NotificationRepository:
             reference_id=reference_id,
             action_url=action_url,
         )
-        self._db.add(notification)
         try:
-            await self._db.flush()
+            # `add` belongs inside the savepoint: rolling back to the
+            # savepoint undoes it, so the outer flush cannot re-attempt the
+            # insert that just failed.
+            async with self._db.begin_nested():
+                self._db.add(notification)
+                await self._db.flush()
         except IntegrityError:
-            await self._db.rollback()
             return None
         return notification

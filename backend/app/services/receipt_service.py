@@ -398,6 +398,16 @@ async def create_transaction_from_receipt(
     if receipt.transaction_id is not None:
         raise ConflictError("A transaction has already been created from this receipt.")
 
+    # The check above is a fast, friendly 409, not the guarantee: two
+    # concurrent requests both read transaction_id as None and would each
+    # book the expense, double-debiting the account and leaving the receipt
+    # pointing at only one of them. A deterministic idempotency key makes the
+    # unique index on (user_id, idempotency_key) the real arbiter - the
+    # second request gets the first request's transaction back instead of
+    # creating another one, exactly like a retried offline write. The key is
+    # in the server-only namespace, so no client request can pre-claim it.
+    idempotency_key = transaction_service.receipt_idempotency_key(receipt.id)
+
     occurred_at = (
         datetime.combine(receipt.confirmed_date, time.min, tzinfo=UTC)
         if receipt.confirmed_date
@@ -422,7 +432,7 @@ async def create_transaction_from_receipt(
             description=description,
             occurred_at=occurred_at,
         ),
-        idempotency_key=None,
+        idempotency_key=idempotency_key,
     )
     receipt.transaction_id = transaction.id
     await repo.flush()

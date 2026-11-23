@@ -35,6 +35,44 @@ from app.services.ledger_calculations import balance_deltas
 from app.services.merchant_rule_service import upsert_rule
 from app.services.quick_add_parser import parse_quick_add_text
 
+# Matches the transactions.idempotency_key column (String(100)); a longer
+# client key would otherwise fail in PostgreSQL as a 500.
+MAX_IDEMPOTENCY_KEY_LENGTH = 100
+
+# Keys the server derives itself (see receipt_idempotency_key) live under this
+# prefix, and a client-supplied Idempotency-Key may never use it. Keys are
+# unique per user, so otherwise a manual POST /transactions could claim the
+# key reserved for one of that user's receipts, and creating the receipt's
+# transaction would then return - and link the receipt to - that unrelated
+# transaction instead of booking the receipt's own.
+SERVER_IDEMPOTENCY_KEY_PREFIX = "server:"
+
+
+def receipt_idempotency_key(receipt_id: uuid.UUID) -> str:
+    return f"{SERVER_IDEMPOTENCY_KEY_PREFIX}receipt:{receipt_id}"
+
+
+def validate_client_idempotency_key(key: str | None) -> str | None:
+    """The boundary check for an `Idempotency-Key` header. Internal callers
+    pass server-derived keys to create_transaction directly and never come
+    through here."""
+    if not key:
+        return None
+    if len(key) > MAX_IDEMPOTENCY_KEY_LENGTH:
+        raise ValidationAppError(
+            f"Idempotency-Key must be at most {MAX_IDEMPOTENCY_KEY_LENGTH} characters.",
+            field_errors={"idempotency_key": "too long"},
+        )
+    # Case-insensitive so a near-miss spelling can't be mistaken for, or
+    # later collide with, a server key.
+    if key.lower().startswith(SERVER_IDEMPOTENCY_KEY_PREFIX):
+        raise ValidationAppError(
+            f"Idempotency-Key must not start with '{SERVER_IDEMPOTENCY_KEY_PREFIX}'; "
+            "that prefix is reserved for keys the server creates.",
+            field_errors={"idempotency_key": "reserved prefix"},
+        )
+    return key
+
 
 def _to_read(transaction: Transaction) -> TransactionRead:
     return TransactionRead.model_validate(transaction)
@@ -242,38 +280,41 @@ async def create_transaction(
         external_transaction_id=external_transaction_id,
         needs_review=needs_review,
     )
-    txn_repo.add(transaction)
+    occurred_at = transaction.occurred_at
     try:
-        await txn_repo.flush()
-    except IntegrityError:
-        # Only reachable via a genuine race: either another request with the
-        # same (user_id, idempotency_key), or - when generating recurring
-        # occurrences - another concurrent "generate" call for the same
+        # A SAVEPOINT, not the whole transaction. This is only reachable via a
+        # genuine race: either another request with the same (user_id,
+        # idempotency_key), or - when generating recurring occurrences -
+        # another concurrent "generate" call for the same
         # (recurring_transaction_id, occurred_at), committed between our own
         # "does this already exist" check and this insert. Either way, the
         # database's own unique constraint (not this code) is what actually
-        # prevents the double-booking. Roll back this half-open transaction,
-        # then treat it exactly like the ordinary idempotent-replay case:
-        # return the row the other request created, never a raw 500 and
-        # never a second transaction. See CLAUDE.md/offline-sync spec:
-        # "duplicate requests return/use the original transaction result
-        # rather than creating another transaction."
+        # prevents the double-booking, and we then treat it exactly like the
+        # ordinary idempotent-replay case: return the row the other request
+        # created, never a raw 500 and never a second transaction. See
+        # CLAUDE.md/offline-sync spec: "duplicate requests return/use the
+        # original transaction result rather than creating another
+        # transaction."
         #
-        # This rollback expires every ORM object already loaded on `db`,
-        # not just `transaction` - a caller iterating its own already-loaded
-        # objects across multiple create_transaction calls (see
-        # app.services.recurring_transaction_service._generate_due_occurrences)
-        # must not touch their attributes again afterwards without an
-        # explicit re-fetch, or a plain attribute access will try to
-        # implicitly reload an expired attribute outside of any awaited
-        # call and raise MissingGreenlet.
-        await db.rollback()
+        # Rolling back the whole transaction here (as this once did) also
+        # threw away work the caller had already done on `db` - most visibly
+        # app.services.recurring_transaction_service._generate_due_occurrences,
+        # which creates several occurrences in one transaction and would lose
+        # the earlier ones to a race on a later one. Undoing only this insert
+        # leaves those intact and leaves no ORM object expired.
+        #
+        # `add` belongs inside the savepoint: rolling back to the savepoint
+        # undoes it, so the outer flush cannot re-attempt the failed insert.
+        async with db.begin_nested():
+            txn_repo.add(transaction)
+            await txn_repo.flush()
+    except IntegrityError:
         existing = None
         if idempotency_key:
             existing = await txn_repo.get_by_idempotency_key(user_id, idempotency_key)
         elif recurring_transaction_id is not None:
             existing = await txn_repo.get_by_recurring_occurrence(
-                recurring_transaction_id, transaction.occurred_at
+                recurring_transaction_id, occurred_at
             )
         if existing is None:
             raise

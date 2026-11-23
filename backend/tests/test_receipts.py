@@ -1,7 +1,10 @@
 import io
 
-from httpx import AsyncClient
+import pytest
+from httpx import AsyncClient, Response
 from reportlab.pdfgen import canvas
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 _PNG_1PX = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -423,3 +426,175 @@ async def test_list_never_leaks_another_users_receipts(
     response = await client.get("/api/v1/receipts", headers=auth_headers)
     ids = [r["id"] for r in response.json()["data"]]
     assert ids == [mine["id"]]
+
+
+async def test_a_racing_receipt_transaction_books_the_expense_only_once(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+) -> None:
+    """F-005. The `transaction_id is not None` check is a friendly 409, not the
+    guarantee: two concurrent requests both read it as None and each booked the
+    expense, double-debiting the account. Clearing the link reproduces exactly
+    what the second request sees after losing that race; the deterministic
+    idempotency key must make it a replay instead of a second transaction."""
+    account = await _create_account(client, auth_headers)
+    created = await _upload_pdf(client, auth_headers)
+    food_id = await _get_category_id(client, auth_headers, "Food")
+    await client.put(
+        f"/api/v1/receipts/{created['id']}/confirm",
+        headers=auth_headers,
+        json={
+            "merchant": "Corner Cafe",
+            "date": "2026-03-05",
+            "total_minor": 60000,
+            "category_id": food_id,
+        },
+    )
+
+    first = await client.post(
+        f"/api/v1/receipts/{created['id']}/transaction",
+        headers=auth_headers,
+        json={"account_id": account["id"]},
+    )
+    assert first.status_code == 201, first.text
+
+    await db_session.execute(
+        text("UPDATE receipts SET transaction_id = NULL WHERE id = :r"), {"r": created["id"]}
+    )
+    await db_session.commit()
+
+    second = await client.post(
+        f"/api/v1/receipts/{created['id']}/transaction",
+        headers=auth_headers,
+        json={"account_id": account["id"]},
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["data"]["id"] == first.json()["data"]["id"], "must replay, not re-book"
+
+    listed = await client.get("/api/v1/transactions", headers=auth_headers)
+    receipt_expenses = [
+        t for t in listed.json()["data"] if t["description"] == first.json()["data"]["description"]
+    ]
+    assert len(receipt_expenses) == 1
+    account_after = await client.get(
+        f"/api/v1/accounts/{account['id']}", headers=auth_headers
+    )
+    assert account_after.json()["data"]["balance_minor"] == account["balance_minor"] - 60000
+
+
+async def _confirmed_receipt(client: AsyncClient, headers: dict, *, total_minor: int) -> dict:
+    created = await _upload_pdf(client, headers)
+    food_id = await _get_category_id(client, headers, "Food")
+    response = await client.put(
+        f"/api/v1/receipts/{created['id']}/confirm",
+        headers=headers,
+        json={
+            "merchant": "Corner Cafe",
+            "date": "2026-03-05",
+            "total_minor": total_minor,
+            "category_id": food_id,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return created
+
+
+async def _manual_expense(
+    client: AsyncClient, headers: dict, account_id: str, *, key: str
+) -> Response:
+    return await client.post(
+        "/api/v1/transactions",
+        headers={**headers, "Idempotency-Key": key},
+        json={"account_id": account_id, "type": "expense", "amount_minor": 100},
+    )
+
+
+@pytest.mark.parametrize("spelling", ["server:receipt:{id}", "SERVER:receipt:{id}", "Server:x"])
+async def test_a_client_key_cannot_claim_the_server_namespace(
+    client: AsyncClient, auth_headers: dict, spelling: str
+) -> None:
+    """Otherwise a manual POST could pre-claim a receipt's key, and creating
+    that receipt's transaction would replay the unrelated manual one."""
+    account = await _create_account(client, auth_headers)
+    receipt = await _confirmed_receipt(client, auth_headers, total_minor=60000)
+
+    response = await _manual_expense(
+        client, auth_headers, account["id"], key=spelling.format(id=receipt["id"])
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["field_errors"] == {"idempotency_key": "reserved prefix"}
+    listed = await client.get("/api/v1/transactions", headers=auth_headers)
+    assert listed.json()["data"] == []
+
+
+async def test_a_lookalike_client_key_never_hijacks_a_receipt(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """The pre-fix receipt key spelling is now just an ordinary client key:
+    the receipt still books its own transaction."""
+    account = await _create_account(client, auth_headers)
+    receipt = await _confirmed_receipt(client, auth_headers, total_minor=60000)
+
+    manual = await _manual_expense(
+        client, auth_headers, account["id"], key=f"receipt:{receipt['id']}"
+    )
+    assert manual.status_code == 201, manual.text
+
+    booked = await client.post(
+        f"/api/v1/receipts/{receipt['id']}/transaction",
+        headers=auth_headers,
+        json={"account_id": account["id"]},
+    )
+    assert booked.status_code == 201, booked.text
+    assert booked.json()["data"]["id"] != manual.json()["data"]["id"]
+    assert booked.json()["data"]["amount_minor"] == 60000
+    account_after = await client.get(f"/api/v1/accounts/{account['id']}", headers=auth_headers)
+    assert account_after.json()["data"]["balance_minor"] == account["balance_minor"] - 60100
+
+
+async def test_an_idempotency_key_longer_than_its_column_is_a_422_not_a_500(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    account = await _create_account(client, auth_headers)
+
+    at_limit = await _manual_expense(client, auth_headers, account["id"], key="k" * 100)
+    too_long = await _manual_expense(client, auth_headers, account["id"], key="k" * 101)
+
+    assert at_limit.status_code == 201, at_limit.text
+    assert too_long.status_code == 422
+    assert too_long.json()["error"]["field_errors"] == {"idempotency_key": "too long"}
+
+
+async def test_an_ordinary_client_key_still_replays(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    account = await _create_account(client, auth_headers)
+
+    first = await _manual_expense(client, auth_headers, account["id"], key="offline-7f3a")
+    second = await _manual_expense(client, auth_headers, account["id"], key="offline-7f3a")
+
+    assert first.status_code == 201 and second.status_code == 201
+    assert first.json()["data"]["id"] == second.json()["data"]["id"]
+
+
+async def test_deleting_a_receipt_transaction_lets_the_receipt_book_again(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """Deleting frees both the receipt link (ON DELETE SET NULL) and the
+    server key, so the receipt can be booked again - once."""
+    account = await _create_account(client, auth_headers)
+    receipt = await _confirmed_receipt(client, auth_headers, total_minor=60000)
+    path = f"/api/v1/receipts/{receipt['id']}/transaction"
+
+    first = await client.post(path, headers=auth_headers, json={"account_id": account["id"]})
+    assert first.status_code == 201, first.text
+    deleted = await client.delete(
+        f"/api/v1/transactions/{first.json()['data']['id']}", headers=auth_headers
+    )
+    assert deleted.status_code in (200, 204), deleted.text
+
+    again = await client.post(path, headers=auth_headers, json={"account_id": account["id"]})
+    assert again.status_code == 201, again.text
+    assert again.json()["data"]["id"] != first.json()["data"]["id"]
+    account_after = await client.get(f"/api/v1/accounts/{account['id']}", headers=auth_headers)
+    assert account_after.json()["data"]["balance_minor"] == account["balance_minor"] - 60000

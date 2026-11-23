@@ -250,16 +250,18 @@ async def complete_link(
             consent_expires_at=completion.consent_expires_at,
             masked_account_ref=institution_account.masked_account_ref,
         )
-        linked_repo.add(linked_account)
         try:
-            await linked_repo.flush()
-        except IntegrityError:
             # Genuine race: another request completed the same handle
             # concurrently. The database's own unique constraint (see
             # app.models.linked_account) is what actually prevents the
             # duplicate row; this just turns it into an idempotent replay
-            # rather than a raw 500.
-            await db.rollback()
+            # rather than a raw 500. A SAVEPOINT, so the race undoes only
+            # this insert and not the rest of the link completion; `add`
+            # goes inside it so the failed insert is not left pending.
+            async with db.begin_nested():
+                linked_repo.add(linked_account)
+                await linked_repo.flush()
+        except IntegrityError:
             existing = await linked_repo.get_by_consent_and_external_account(
                 consent_id=completion.consent_id,
                 external_account_id=institution_account.external_account_id,

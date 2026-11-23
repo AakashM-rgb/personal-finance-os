@@ -13,8 +13,16 @@ generation runs can never create a duplicate (see
 app.services.recurring_transaction_service for the identical pattern this
 mirrors, including its own concurrency lesson: every value a detector
 needs is read out of a service-layer Pydantic response, never a live ORM
-object, specifically because a Pydantic model can never be invalidated by
-another detector's rollback later in the same request)."""
+object, so no detector depends on another's write having left the session
+untouched).
+
+A duplicate is the normal outcome here, not an error: these detectors run
+on every notification list/count request, so most of what they attempt
+already exists. The duplicate insert is undone by a SAVEPOINT inside
+NotificationRepository.create_if_not_exists, which is what makes running
+five detectors in one transaction safe - a whole-transaction rollback
+there used to discard the notifications the earlier detectors had just
+created."""
 
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -125,12 +133,12 @@ async def _generate_payment_reminder_notifications(
 
     accounts = await AccountRepository(db).list_for_user(user_id, include_inactive=False)
     # Every value the loop below needs is copied out of the ORM rows into
-    # plain tuples up front, before any create_if_not_exists call runs
-    # (which may roll back this session on a duplicate-key race) - touching
-    # an ORM attribute (account.name, account.credit_card.payment_due_day)
-    # after that rollback would try an implicit, unsupported lazy-reload
-    # (see app.services.recurring_transaction_service's own docstring for
-    # the concurrency bug this exact pattern once caused, and
+    # plain tuples up front, before any create_if_not_exists call runs. That
+    # call now undoes only its own insert (a SAVEPOINT), so it no longer
+    # expires this session's objects, but reading nothing back from the ORM
+    # mid-loop keeps the detector independent of how the write recovers (see
+    # app.services.recurring_transaction_service's own docstring for the
+    # concurrency bug this pattern was introduced for, and
     # _generate_unusual_spending_notifications below for the identical
     # extract-before-any-write precedent already used in this module).
     # A card with nothing owed (zero or a credit balance) has no payment to remind about.
@@ -254,11 +262,9 @@ async def _generate_unusual_spending_notifications(
         user_id, date_from=window_start, date_to=now, currency=currency
     )
     # Every value needed below is copied out of the ORM rows into plain
-    # tuples up front, before any create_if_not_exists call runs (which may
-    # roll back this session on a duplicate-key race) - touching an ORM
-    # attribute after that rollback would try an implicit, unsupported
-    # lazy-reload (see app.services.recurring_transaction_service's own
-    # docstring for the concurrency bug this exact pattern once caused).
+    # tuples up front, before any create_if_not_exists call runs - see
+    # _generate_payment_reminder_notifications above for why this module
+    # keeps that discipline even now that the write only undoes itself.
     expenses = sorted(
         (
             (str(t.id), t.category_id, t.amount_minor, t.occurred_at)
