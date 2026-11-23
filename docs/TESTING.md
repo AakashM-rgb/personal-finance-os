@@ -53,7 +53,7 @@ npm run build         # production build
 - `auth_headers` / `other_auth_headers`: two independently registered users, used for
   authorization tests.
 
-### Unit tests (pure functions, no API/DB fixture): 475 tests
+### Unit tests (pure functions, no API/DB fixture)
 
 Money, date, and parsing rules are kept in DB-free modules so they can be tested with plain
 values. For example:
@@ -66,14 +66,16 @@ values. For example:
 | `services/subscription_calculations.py` | `test_subscription_calculations.py` (21) | The canonical monthly/yearly normalization for every frequency, with rounding; unused-subscription evidence at the exact 60-day and 90-day boundaries |
 | `services/analytics_calculations.py` | `test_analytics_calculations.py` (30) | Range presets across year boundaries; day/month granularity at exactly the threshold; trend direction with zero and negative baselines |
 | `services/ledger_calculations.py` | `test_ledger_calculations.py` (101) | Every account type × leg (income, expense, transfer source/destination): assets store the cash-flow delta, credit cards store the amount owed; card purchases cut net worth, refunds raise it, and every transfer (repayment, cash advance, card → card, asset → asset) is net-worth neutral |
-| `services/health_score.py` | `test_health_score.py` (17) | Deterministic score; `None` with no data; weights redistributed when a factor doesn't apply; worst card (not average) for debt; 0–100 bounds |
+| `services/health_score.py` | `test_health_score.py` (18) | Deterministic score; `None` with no data; weights redistributed when a factor doesn't apply; worst card (not average) for debt; an over-limit card (120%) floors the debt factor at 0 and reports the literal 120%; 0–100 bounds |
 | `services/calendar_calculations.py`, `quick_add_parser.py`, `export_formatting`/`export_service.py`, `merchant_normalization.py` | respective files | Calendar projection, quick-add amount/category parsing, CSV/XLSX/PDF rendering, merchant key normalization |
-| `search/*` | `test_search_interpreter.py` (43), `test_search_schema_validation.py` (29), `test_search_period_phrases.py` (24), `test_search_query_builder.py` (11), `test_search_category_resolution.py` (8) | Natural-language text compiles only into the allow-listed filter schema; invalid or out-of-range filters are rejected |
-| `ai/*` | `test_ai_classifier.py` (79), `test_ai_period_resolution.py` (19), `test_ai_mock_intents.py` (17), `test_ai_calculations.py` (8) | Classifier output validation, period resolution, mock-provider intents |
+| `search/*` | `test_search_interpreter.py` (43), `test_search_schema_validation.py` (43), `test_search_period_phrases.py` (24), `test_search_query_builder.py` (11), `test_search_category_resolution.py` (8) | Natural-language text compiles only into the allow-listed filter schema; invalid or out-of-range filters are rejected |
+| `ai/*` | `test_ai_classifier.py` (79), `test_ai_period_resolution.py` (19), `test_ai_mock_intents.py` (18), `test_ai_calculations.py` (8) | Classifier output validation, period resolution, mock-provider intents |
 | `sync/provider/*` | `test_sync_provider.py` (31) | Mock/sandbox provider contract |
-| `core/security.py`, `core/logging.py` | `test_security.py` (5), `test_core_logging.py` (4) | Argon2 hashing and verification, JWT type checks, log formatting |
+| `core/security.py`, `core/logging.py`, `core/config.py` | `test_security.py` (8), `test_core_logging.py` (4) | Argon2 hashing and verification, JWT type checks, log formatting; a `*` in `CORS_ORIGINS` is refused in production |
+| `services/account_service.py` card figures | `test_credit_card_figures.py` (21) | Utilization (0% for a credit balance, 120% reported unclamped when over the limit, divide-by-zero guard); available credit never negative and above the limit for an overpaid card; over-limit amount only the overshoot; available and over-limit never both non-zero |
+| `docs/DEPLOYMENT.md` (F-001 runbook) | `test_f001_deployment_runbook.py` (9) | The lockstep runbook still carries every safeguard the migration depends on: each of the migration's three blocker names is documented; the resume gate names the live-commit, deploy-status and health checks and refuses an unconditional resume; the limits of manual-edit detection and the reconciliation procedure for skipped cards are present; and the verified Render facts (free plan, maintenance mode paid-only, the ~90 s old-instance overlap) replace the claim they corrected |
 
-### Integration tests (real HTTP → service → PostgreSQL): 591 tests
+### Integration tests (real HTTP → service → PostgreSQL)
 
 Each resource has a `test_<resource>.py` that drives the real endpoints and checks the JSON
 envelope and the resulting database state. For example:
@@ -97,10 +99,63 @@ envelope and the resulting database state. For example:
 - `test_reports.py` (17) and `test_report_exports.py` (8): hand-calculated monthly and yearly
   figures, leap-year February, net-worth reconstruction in which a card repayment is neutral and
   card spending and refunds move the trend in the month they happen, and real CSV/XLSX/PDF output.
-- `test_f001_card_ledger_impact_check_sql.py` (3): the operator's read-only staging check
-  (`scripts/sql/f001_card_ledger_impact_check.sql`) contains only `SELECT`s, transaction control
-  and `SET LOCAL` timeouts, and runs cleanly against the migrated schema.
-- `test_sync_service.py` (70), `test_notifications.py` (45), `test_ai_tools.py` (25),
+- `test_f001_card_ledger_impact_check_sql.py` (12): both operator scripts
+  (`scripts/sql/f001_card_ledger_impact_check.sql`, `f001_card_ledger_post_migration_check.sql`)
+  contain only `SELECT`s, transaction control and `SET LOCAL` timeouts, and run cleanly against
+  the migrated schema; the impact check's summary and per-card parts share one definition; Part 1
+  matches hand-computed figures (distinct transactions vs legs, per-currency correction totals,
+  positive/negative counts) and counts the cards the migration would refuse or flag, including
+  cards the fixed code has touched since the revision's first run (and zero of them on a database
+  where it has never run).
+- `test_migration_card_balance_correction.py` (19, added 2026-11-22): migration `c8e4a1f6b2d9`
+  on data seeded as the pre-fix backend booked it. With nothing to correct it runs without a flag
+  and only writes a summary row; otherwise it refuses without `apply` and changes nothing;
+  `apply` corrects each card by `−2·D`, matching the impact check, audits it and never touches
+  transactions; a currency mismatch or a post-fix balance edit blocks until skipped; bad options
+  are refused; downgrade needs `revert`, reverts exactly the recorded correction, refuses a
+  balance set by hand afterwards, and never reverts twice. A re-upgrade after a downgrade refuses
+  any card the fixed backend has booked a leg on since the first run (otherwise D would absorb it
+  and move the balance by twice its amount), including a card first used after a `mode: none` run
+  on a database with no cards. That guard reads two independent records, so it still refuses with
+  `audit_logs` purged and still refuses with the `data_correction_runs` rows deleted; with both
+  destroyed it is blind, which one test pins deliberately. The run record survives a downgrade,
+  is recreated if missing, and `alembic check` must stay clean because the table is created with
+  raw idempotent DDL and declared by `app/models/data_correction_run.py`.
+- `test_duplicate_write_recovery.py` (6): a duplicate notification, or a racing
+  `Idempotency-Key`, rolls back only its own SAVEPOINT, so rows created earlier in the same
+  request survive and balances stay consistent. The tests fail against the old full `rollback()`.
+- `test_receipts.py` (33): includes
+  `test_a_racing_receipt_transaction_books_the_expense_only_once`; a client `Idempotency-Key` in
+  the reserved `server:` namespace (any letter case) is a 422 and books nothing; the pre-fix
+  `receipt:<id>` spelling no longer hijacks the receipt; a key past the 100-character column is
+  a 422, not a 500; an ordinary client key still replays; and deleting a receipt's transaction
+  lets the receipt book again, once.
+- `test_money_limits.py` (35): every money field on every request model has an upper bound (the
+  models are discovered automatically, and a guard test fails if discovery finds none), and the
+  API returns 422 rather than storing or overflowing a transaction, balance (both directions),
+  credit limit or goal target past `MAX_MONEY_MINOR`; the ceiling itself is accepted.
+- `test_request_id.py` (27): every response carries an `X-Request-Id`: success, 401, validation
+  errors, an unhandled 500 (with the security headers too), and allowed and refused CORS
+  preflights. Each request gets its own id; a well-formed proxy id is reused, including on a 500;
+  the 500's logged traceback carries the same id as its header; hostile inbound ids are dropped
+  and never echoed; `app.*` log records carry the current id.
+- `test_ai_assistant_service.py` (16): includes the mock balances answer describing a card as
+  owed or credit balance, with available credit and any over-limit amount, never a negative figure.
+- `test_account_deletion.py` (8): deleting an account removes every row of every table with a
+  `user_id` (found from the live schema, so new tables are covered) and nothing of another
+  user's; audit rows keep their action and lose IP, user agent and metadata; a wrong password
+  deletes nothing; the user is signed out everywhere; receipt files leave storage; the email can
+  register again; the target is always the caller.
+- `test_body_limit.py` (4): a declared oversized body is refused before it is read, a streamed one
+  is cut off, both as a 413 envelope with a request id, and a maximum-size receipt still fits.
+- `test_export_formatting.py` (34): `format_money` prints INR to the exact paisa at zero, one
+  paisa, negatives and ±`MAX_MONEY_MINOR`, matching exact `Decimal` arithmetic across the whole
+  accepted range.
+- `test_search_api.py` (22): includes amount filters, where a normal amount still works, the
+  `MAX_MONEY_MINOR` ceiling itself is searchable, anything past it (including past BIGINT) is a
+  specific 422 rather than a 500, and a minus sign never becomes a negative filter.
+- `test_sync_service.py` (70), `test_notifications.py` (45), `test_ai_tools.py` (26, including
+  over-limit card figures in `get_account_balances`),
   `test_auth.py` (26), and the rest.
 
 ### Authorization and isolation tests
@@ -128,7 +183,8 @@ Every money figure has a test with a hand-computed expected value: totals, budge
 `test_reports.py::test_savings_report_never_fabricates_a_rate_with_zero_income`), net worth
 (`test_dashboard.py::test_total_balance_excludes_credit_card_and_net_worth_subtracts_debt`,
 `test_reports.py::test_net_worth_report_*`), credit utilization
-(`test_accounts.py::test_credit_card_utilization_*`, including 0% for a credit balance), the
+(`test_accounts.py::test_credit_card_utilization_*`, including 0% for a credit balance), available
+credit and the over-limit amount (`test_credit_card_figures.py`), the
 credit-card ledger (`test_ledger_calculations.py`, `test_credit_card_ledger.py`), card dues
 (`test_dashboard.py::test_upcoming_credit_card_payment_amount`), subscription normalization
 (`test_subscription_calculations.py`), goal pacing, and balance ledger effects
@@ -163,18 +219,38 @@ Examples, by category:
 - The test DB schema comes from the real Alembic migrations (`alembic upgrade head`), so the
   migrations themselves get exercised.
 - `alembic check` compares the ORM models against the migrated schema to catch drift.
+- `test_rls_hardening.py` (26) covers migration `d7a1e4c9b3f2`. At head: RLS on every
+  `public` table (so a future table without it fails), every model table included, no FORCE, no
+  policies, the backend role owns every table and still reads and writes. Also: a single
+  Alembic head, a plain downgrade that keeps the protection, `revert` that disables RLS but never
+  re-grants, idempotent re-runs, mistyped flags refused, and offline SQL rendering refused. A
+  lock held by another session makes the migration fail within its 10 s lock timeout and change
+  nothing; no function may live in `public`; and `scripts/sql/public_schema_exposure_check.sql`
+  reports a clean head.
+  - **With Supabase's `anon`/`authenticated` roles** (9 tests): the fixture reproduces the
+    production finding (every grant, default privileges, RLS off) and proves `anon` can read
+    `users`. After the upgrade, every privilege is gone, both roles get "permission denied" on
+    SELECT/UPDATE/TRUNCATE, RLS still hides rows if a grant is restored by mistake, new tables
+    aren't granted, and a non-owner migrating role is refused before any change.
+  - These need a role that can create roles. They skip on a local database where the test role
+    can't, and **fail instead of skipping** when `REQUIRE_SUPABASE_ROLE_TESTS=1`, which CI sets
+    (CI's PostgreSQL user is a superuser). Locally, run them against a throwaway cluster:
+    `initdb -U ci_super --auth=trust`, start it on a spare port, `createdb finance_app_test`,
+    then point `DATABASE_URL`/`TEST_DATABASE_URL`/`ALEMBIC_DATABASE_URL` at it with
+    `REQUIRE_SUPABASE_ROLE_TESTS=1`.
+- `tests/alembic_runner.py` is the one subprocess helper both migration test files use.
 
-## Frontend tests: 256 tests in 41 files
+## Frontend tests: 427 tests in 57 files
 
 | Area | Files |
 |---|---|
-| Money utility | `money.test.ts` (paise ⇄ display formatting and parsing) |
+| Money utility | `money.test.ts` (paise ⇄ display formatting and parsing; amounts above `MAX_MONEY_MINOR` rejected) |
 | Transaction entry | `add-expense-sheet`, `transaction-form`, `transaction-row` |
 | Feature helpers (`lib/`) | `analytics`, `goals`, `receipts`, `recurring-transactions`, `subscriptions`, `theme` |
 | Calendar and reports | `calendar-grid`, `day-detail-modal`, `month-navigator`, `report-controls`, `report-type-tabs`, `category-items-list`, `export-buttons` |
 | AI and search | `ai-assistant-page`, `chat-input`, `chat-message-bubble`, `suggested-questions`, `natural-language-search` |
 | Settings, sync, notifications | `settings-page`, `preferences-section`, `security-section`, `notifications-section`, `connected-accounts-page`, `linked-account-card`, `merchant-rules-page`, `notification-bell` |
-| Accounts | `credit-card-balance` (card balance shown as owed or credit balance, utilization bar clamped to 0–100%, "Amount owed" form label, credit balance in the net-worth report) |
+| Accounts | `credit-card-balance` (card balance shown as owed or credit balance, utilization bar clamped to 0–100%, "Amount owed" form label, credit balance in the net-worth report, zero available credit plus the overshoot for an over-limit card, never a negative available credit) |
 | Navigation and responsive shell | `mobile-bottom-nav`, `landing-nav`, `landing-page`, `faq-section`, `button` |
 | Offline / PWA | `offline-db`, `offline-sync-queue`, `sync-status-indicator`, `pwa-manifest` |
 | Error states | `error-boundaries` (see below); inline error and empty states inside `connected-accounts-page`, `merchant-rules-page`, `notification-bell`, `ai-assistant-page`, and others |
@@ -235,19 +311,31 @@ row**, because there's no committed browser test suite.
 
 ## Current results
 
-Run on 2026-09-28, branch `feat/automatic-transaction-sync`, Windows 11, Python 3.13.13,
-Node 24.14.0, local PostgreSQL:
+Run on 2026-11-22, branch `fix/credit-card-ledger-semantics` (uncommitted working tree),
+Windows 11, Python 3.13, Node 24, local PostgreSQL 18. Alembic was checked against the local test
+database. The dev database is deliberately left behind, at `a3f9c1d2e7b4`, until
+`c8e4a1f6b2d9` and `d7a1e4c9b3f2` are approved. The backend suite was run twice: against the local
+test database, and against a throwaway superuser cluster that mirrors CI, with
+`REQUIRE_SUPABASE_ROLE_TESTS=1`, in an environment installed fresh from
+`requirements.lock` (the dependency set CI and Render install). Each of the seven proposed
+intermediate commits was also built from `git archive HEAD` plus its files and its suite run on
+its own database: c1 1335, c2 1449, c3 1463, c4 1466, c5 1497, c6 1523 and c7 1534 passed, with
+0 failures and 0 skips.
 
 | Check | Result |
 |---|---|
-| Backend pytest | **1066 passed**, 0 failed, 1 warning (third-party `passlib` argon2 deprecation), 99 s |
-| Frontend vitest | **256 passed**, 0 failed, 41 files |
-| mypy (`app`) | Success: no issues in 172 source files |
-| ruff check (`app tests`) | All checks passed |
-| `tsc --noEmit` | no errors |
+| Backend pytest, CI parity (superuser cluster, role tests required, lockfile environment) | **1534 passed**, 0 failed, 0 skipped, 1 warning (third-party `passlib` argon2 deprecation), 304 s |
+| Backend pytest, local test DB | **1525 passed**, 9 skipped (exactly the Supabase-role RLS tests, which this test role can't run), 0 failed, 301 s |
+| Frontend vitest | **427 passed**, 0 failed, 57 files |
+| mypy (`app`) | Success: no issues in 184 source files |
+| ruff check (`app tests migrations`) | All checks passed |
+| `npm run typecheck` (`next typegen && tsc --noEmit`) | no errors, including on a clean checkout with no generated types |
 | ESLint | no errors or warnings |
-| `next build` (Turbopack) | compiled; 24 static pages generated |
-| `alembic heads` / `current` / `check` | single head `43b64866b554`; dev DB at head; "No new upgrade operations detected" (models match migrations) |
+| `next build` (Turbopack, Next 16.4.6) | compiled; 24 static pages generated |
+| `npm audit` | 0 vulnerabilities |
+| `pip-audit` (installed backend environment, as in CI) | No known vulnerabilities (after raising the `pyjwt`, `pypdf`, `pillow`, `dnspython` and `certifi` floors, and upgrading pip itself) |
+| Browser smoke (Playwright, production build, throwaway DB) | 13 app pages at 390 px and 1440 px: no console errors, page errors, 5xx responses or horizontal overflow; account deletion end to end |
+| `alembic heads` / `current` / `check` | single head `d7a1e4c9b3f2`; test DB at head; "No new upgrade operations detected" (models match migrations) |
 
 `ruff format` isn't part of the project's checks. Running `ruff format --check app` reports 16
 pre-existing files that would be reformatted, so it isn't a gate today.

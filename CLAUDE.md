@@ -210,6 +210,13 @@ are not permitted — extend or reuse what's there.
 - Schema changes go through Alembic migrations only — never hand-edit the schema or apply
   unmanaged DDL against a running database.
 - Migrations must be reversible where feasible, and must not silently discard user data.
+- **Every table in `public` has row level security enabled, with no policies.** The backend
+  connects as the tables' owner, which RLS does not restrict, while Supabase's Data API roles
+  (`anon`, `authenticated`) hold no privileges and would see no rows anyway. A migration that
+  creates a table must `ENABLE ROW LEVEL SECURITY` on it in the same migration
+  (`tests/test_rls_hardening.py` fails otherwise). Never grant to `anon`/`authenticated`, never
+  add a permissive policy to make something work, and never connect the backend as a
+  non-owner role without redesigning this (see `docs/DATABASE.md`).
 
 ---
 

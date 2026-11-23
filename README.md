@@ -74,7 +74,7 @@ flows: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ### Prerequisites
 
 - Node.js 20+ and npm
-- Python 3.11+
+- Python 3.13 (the only version `backend/requirements.lock` is resolved for)
 - PostgreSQL running locally (or reachable), with a dedicated application role and database
   created (see `backend/.env.example` for the connection string shape). Never use the Postgres
   superuser for the running application.
@@ -186,6 +186,7 @@ app's OpenAPI schema (`app.openapi()`). The live, typed schema is at `/docs` and
 | POST | `/auth/refresh` | 🍪 ⏱ | Rotate the refresh token and get a new access token. Reusing a rotated token revokes every session for that user. |
 | POST | `/auth/logout` | 🍪 ⏱ | Revoke the current session and clear cookies |
 | POST | `/auth/logout-all` | 🔒 | Revoke every session for the user |
+| POST | `/auth/delete-account` | 🔒 ⏱ | Re-check the password, then permanently delete the account and everything it owns (one cascading delete), remove its receipt files, strip personal data from its audit rows, and clear the session cookies. Shares the change-password throttle. |
 | POST | `/auth/change-password` | 🔒 ⏱ | Verify the current password and set a new one. Revokes every session (and with it every access token), then issues a fresh session for the caller. Wrong current passwords are throttled per account. |
 | GET | `/auth/me` | 🔒 | Current user |
 | GET | `/auth/sessions` | 🔒 | The caller's active sessions |
@@ -293,8 +294,10 @@ inclusive). Export `format` is `csv`, `xlsx`, or `pdf`.
 
 ## Database schema
 
-PostgreSQL with **19 tables**, created by **16 linear Alembic migrations** (head
-`a3f9c1d2e7b4`). Full column, constraint, index, and delete-behavior reference:
+PostgreSQL with **20 tables**, created by **18 linear Alembic migrations** (head
+`d7a1e4c9b3f2`). Every table has row level security enabled and Supabase's Data API roles hold
+no privileges (the backend connects as the tables' owner). Full column, constraint, index, and
+delete-behavior reference:
 [docs/DATABASE.md](docs/DATABASE.md).
 
 | Group | Tables |
@@ -323,10 +326,10 @@ Key relationships and invariants:
 
 ## Testing
 
-| Suite | Count (last run 2026-09-28) | Command |
+| Suite | Count (last run 2026-11-22) | Command |
 |---|---|---|
-| Backend (pytest, real PostgreSQL) | **1066 passed** in 52 files. 475 pure-function unit tests, 591 HTTP → DB integration tests, 76 cross-user isolation tests using the second-user fixture. | `cd backend && .venv/Scripts/python -m pytest` |
-| Frontend (Vitest + RTL, jsdom) | **256 passed** in 41 files | `cd frontend && npm run test` |
+| Backend (pytest, real PostgreSQL) | **1534 passed** in 71 files, including pure-function unit tests, HTTP → DB integration tests, Alembic migration and RLS tests, and 76 cross-user isolation tests using the second-user fixture. | `cd backend && .venv/Scripts/python -m pytest` |
+| Frontend (Vitest + RTL, jsdom) | **427 passed** in 57 files | `cd frontend && npm run test` |
 | E2E / browser | **none committed** | none |
 
 Strategy, fixtures, per-module testing matrix, and known gaps: [docs/TESTING.md](docs/TESTING.md).
@@ -350,7 +353,11 @@ Strategy, fixtures, per-module testing matrix, and known gaps: [docs/TESTING.md]
 - **Headers:** `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
   `Referrer-Policy: strict-origin-when-cross-origin`, and HSTS in production.
 - **Uploads:** file type is checked from the file's own bytes, not its name; there's a 10 MB
-  limit; files are served only through an authenticated endpoint.
+  limit; files are served only through an authenticated endpoint. Every request body is capped
+  at 11 MB before it is read (`app/core/body_limit.py`), answered with a 413 envelope.
+- **Database:** RLS on every table, and no privileges for Supabase's `anon`/`authenticated`
+  roles (migration `d7a1e4c9b3f2`). The app never uses Supabase's REST API. See
+  [docs/DATABASE.md](docs/DATABASE.md#access-control-and-supabases-data-api).
 - **AI:** no database access. It can only call 8 read-only, user-scoped tools that reuse the
   service layer. It never runs generated SQL. Stored user text (merchants, descriptions) reaches
   the model only inside structured `tool_result` blocks, never in the system prompt. There's no
@@ -383,18 +390,21 @@ Strategy, fixtures, per-module testing matrix, and known gaps: [docs/TESTING.md]
 ## Current project status
 
 Phases 1–5 of `CLAUDE.md` §21 are largely built, and part of Phase 6 (PWA/offline, a security
-pass) is done. The current branch, `feat/automatic-transaction-sync`, adds bank sync with a mock
-provider and a Setu sandbox seam.
+pass) is done. The deployed branch, `feat/automatic-transaction-sync`, adds bank sync with a mock
+provider and a Setu sandbox seam. `fix/credit-card-ledger-semantics` (not yet merged or deployed)
+adds the credit-card ledger fix and the release hardening.
 
-**Verification (2026-09-28):** backend 1066/1066 passed, frontend 256/256 passed; ruff, mypy,
-`tsc`, ESLint, `next build`, and `alembic check` all clean. Details in
+**Verification (2026-11-22, branch `fix/credit-card-ledger-semantics`, uncommitted):** backend
+1534/1534 passed, frontend 427/427 passed; ruff, mypy, `tsc`, ESLint, `next build`, `npm audit`, `pip-audit`,
+and `alembic check` all clean. CI (`.github/workflows/ci.yml`) runs the same checks on every
+push. Details in
 [docs/TESTING.md](docs/TESTING.md#current-results).
 
 **Not implemented yet** (no code exists for these):
 
 - Email verification and password reset. The `users.email_verified_at` column exists, but there
   are no endpoints. There's also no Google OAuth.
-- Account deletion and full data export endpoints.
+- A full personal-data export endpoint (report exports exist; a whole-account export doesn't).
 - CSV/Excel **import**. Only export exists.
 - Expense splitting, gamification, and the financial calculator toolbox (Phase 6).
 - A real scheduler for the `app/jobs/` sweeps. Recurring generation is triggered by
@@ -402,7 +412,7 @@ provider and a Setu sandbox seam.
 - A real OCR provider. A real bank-sync provider (`setu_sandbox` is an unimplemented stub).
 - Budget adherence and emergency fund as health-score factors.
 
-**Known engineering gaps:** request and user IDs in server error logs, an explicit prompt-injection guard for user text sent to the LLM, a
+**Known engineering gaps:** user IDs in server error logs (request IDs are logged), an explicit prompt-injection guard for user text sent to the LLM, a
 committed E2E suite, and coverage reporting. See
 [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md#3-known-gaps) and
 [docs/TESTING.md](docs/TESTING.md#known-testing-gaps).

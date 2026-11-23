@@ -30,12 +30,19 @@ configured, each one falls back to a labeled mock or local implementation.
 Every protected request follows the same path. Taking `PUT /api/v1/transactions/{id}` as the
 example:
 
-1. **Middleware** (`app/main.py`): CORS (origins from `CORS_ORIGINS`, credentials allowed) and
-   `SecurityHeadersMiddleware` (`nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, HSTS in
-   production only).
+1. **Middleware** (`app/main.py`): outermost, wrapped around the whole built stack so they also
+   reach a 500 and a CORS preflight, `RequestIdMiddleware` (`app/core/request_id.py`: a
+   per-request id in a `ContextVar`, echoed as `X-Request-Id` and stamped on every `app.*` log
+   record) and `SecurityHeadersMiddleware` (`nosniff`, `X-Frame-Options: DENY`,
+   `Referrer-Policy`, HSTS in production only); then `RequestBodyLimitMiddleware`
+   (`app/core/body_limit.py`: an 11 MB cap on every body, refused as a 413 envelope); then
+   Starlette's `ServerErrorMiddleware`; then CORS (origins from `CORS_ORIGINS`, credentials
+   allowed, a `*` refused in production).
 2. **Router** (`app/api/v1/transactions.py`): thin. FastAPI validates the path, query, and body
-   against Pydantic schemas in `app/schemas/`, resolves `get_db` and `get_current_user`, calls
-   one service function, commits, and wraps the result as `{"data": ..., "error": null, "meta": ...}`.
+   against Pydantic schemas in `app/schemas/` (every money field uses the bounded types in
+   `app/schemas/money.py`, so an out-of-range amount is a 422, not a database overflow),
+   resolves `get_db` and `get_current_user`, calls one service function, commits, and wraps the
+   result as `{"data": ..., "error": null, "meta": ...}`.
 3. **Auth dependency** (`app/auth/dependencies.py::get_current_user`): the single place a bearer
    JWT is decoded. It checks `type == "access"`, parses `sub` as a UUID, and loads an active
    user. Any failure raises `AuthenticationError` (401).
@@ -69,7 +76,7 @@ row for `(id, user_id)`, so the response doesn't even confirm the resource exist
 | `app/ai/provider/` | `AnthropicProvider` / `MockProvider` for the assistant |
 | `app/ai/tools/` | The fixed, read-only tool catalog the assistant may call: `get_monthly_spending`, `get_category_spending`, `get_transactions`, `get_budget_status`, `get_savings_goals`, `get_recurring_expenses`, `get_account_balances`, `compare_periods`. Each one calls the same service functions the REST API uses. |
 | `app/ai/classifier/` | A separate one-shot merchant categorizer (Anthropic or mock), used only by sync, and only when the user has opted in |
-| `app/search/` | Natural-language search. Text is compiled into a validated, allow-listed filter object and run through `TransactionRepository`. No generated SQL. |
+| `app/search/` | Natural-language search. Text is compiled into a validated, allow-listed filter object and run through `TransactionRepository`. No generated SQL. Amount filters use the same `MAX_MONEY_MINOR` bound as every money input, so an amount typed past it is a 422, never a value past BIGINT sent to PostgreSQL. |
 | `app/ocr/`, `app/storage/` | Receipt OCR (mock) and file storage (local filesystem, or S3 when configured) behind interfaces |
 | `app/sync/provider/` | Bank-sync provider seam: `mock` (default), plus a `setu_sandbox` stub whose operations aren't implemented |
 | `app/jobs/` | Job seams: `recurring_transaction_generator`, `notification_generator`. No scheduler runs them automatically yet; see "Background work" below. |
@@ -107,8 +114,12 @@ is immutable, so a reversal always uses the same rule as the original applicatio
 Net worth is assets minus amounts owed (`calculate_net_worth`). A transaction changes net worth by
 the sum of its legs' cash-flow deltas, whatever the account types, so the net-worth trend sums
 those deltas directly (`sum_cash_flow_delta_by_month_for_accounts`) with no per-type flip.
-Utilization is `max(owed, 0) / limit`; the dashboard lists a card payment only when something is
-owed, for the minimum payment capped at the amount owed.
+The card figures come from three functions in `account_service`, which the account API, the
+dashboard, the health score and the AI tools all reuse: utilization is `max(owed, 0) / limit`
+(it can exceed 100%); available credit is `max(limit − owed, 0)`, never negative, and above the
+limit for a card in credit; and the over-limit amount is `max(owed − limit, 0)`. At most one of
+the last two is non-zero. The dashboard lists a card payment only when something is owed, for the
+minimum payment capped at the amount owed.
 
 A balance set directly through `PUT /accounts` bypasses the ledger, so every actual change writes
 an `account.balance_updated` audit row with the previous and new value.
@@ -130,7 +141,11 @@ calendar months), base-currency-only aggregation, and half-open `[from, to)` ran
 
 **Idempotent writes.** `POST /transactions` accepts `Idempotency-Key`. The frontend offline queue
 (`lib/offline/sync-queue.ts`) sends one per queued expense, so a replay after reconnecting can't
-double-book.
+double-book. A client key is at most 100 characters (the column width) and may not start with
+`server:` in any letter case. That prefix is reserved for keys the server derives itself, such as
+`server:receipt:<id>`, which makes booking a receipt's transaction idempotent. Without the
+reservation, a client could pre-claim a receipt's key and have the receipt linked to an unrelated
+transaction.
 
 ### Background work
 
@@ -161,7 +176,8 @@ components/<feature>/     Feature components; components/ui/ holds shared primit
 lib/
 ├── api-client.ts         The only fetch wrapper (JSON, upload, blob). Throws ApiError.
 ├── <feature>.ts          Typed request functions per resource (accounts.ts, transactions.ts, ...)
-├── money.ts              All money formatting and parsing (integer paise ⇄ display string)
+├── money.ts              All money formatting and parsing (integer paise ⇄ display string);
+│                         rejects amounts above MAX_MONEY_MINOR, the backend's own bound
 ├── auth-context.tsx      In-memory access token, session restore through the refresh cookie
 └── offline/              IndexedDB drafts and sync queue, online/offline hook, SW registration
 ```
@@ -180,6 +196,13 @@ calendar, reports) include `useLedgerVersion()` in their fetch dependencies, so 
 in place, keeping the current data on screen, instead of showing stale numbers. The signal
 carries no data and fetches nothing. A shared query cache would replace it with targeted
 invalidation.
+
+**Security headers.** `next.config.ts` sets a Content-Security-Policy (its `connect-src` is
+built from the configured backend origin), HSTS, `X-Frame-Options: DENY`, `nosniff`, a
+restrictive `Permissions-Policy`, and `Cross-Origin-Opener-Policy` on every route. The CSP's
+`script-src` allows `'unsafe-inline'`, a known and accepted weakness. Next streams hydration
+through inline scripts, and it only supports nonces on dynamically rendered pages, while every
+route here is statically prerendered. `tests/next-config.test.ts` pins the header set.
 
 **Auth on the client.** The access token lives only in React state, never in `localStorage`. On
 first load, `AuthProvider` calls `POST /auth/refresh` if a `csrf_token` cookie exists, which

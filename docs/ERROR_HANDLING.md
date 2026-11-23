@@ -23,9 +23,10 @@ Handlers are registered in `backend/app/core/errors.py::register_exception_handl
 | `AuthorizationError` | 403 | `forbidden` | Specific |
 | `NotFoundError` (including another user's resource; see below) | 404 | `not_found` | e.g. "Transaction not found." |
 | `ConflictError` (e.g. a second budget for the same category) | 409 | `conflict` | e.g. "A budget for this category already exists. Edit it instead." |
+| A request body over 11 MB (`app/core/body_limit.py`) | 413 | `payload_too_large` | "This request is too large. Receipts must be 10MB or smaller." Refused before the body is read when `Content-Length` declares it, otherwise as soon as it streams past the limit. |
 | slowapi `RateLimitExceeded` | 429 | `rate_limited` | "Too many requests. Please try again shortly." |
 | Starlette `HTTPException` (unknown route, wrong method) | its own status | `not_found` / `http_error` | The exception's `detail` string |
-| **Any other exception** | 500 | `internal_error` | "Something went wrong on our end. Please try again." The full traceback is logged server-side with `logger.exception` (method and path) and never sent to the client. |
+| **Any other exception** | 500 | `internal_error` | "Something went wrong on our end. Please try again." The full traceback is logged server-side with `logger.exception` (method, path and request id) and never sent to the client. |
 
 Design points:
 
@@ -34,9 +35,26 @@ Design points:
   ownership rules. Database CHECK/UNIQUE constraints are the last line of defense.
 - **Cross-user access is reported as 404.** Repositories filter by `(id, user_id)`, so another
   user's resource is simply "not found", and the response doesn't confirm it exists.
+- **Every response carries a correlation id.** `RequestIdMiddleware`
+  (`backend/app/core/request_id.py`) gives each request an id -- reusing an inbound
+  `X-Request-Id` from a trusted proxy when present, otherwise a fresh uuid4 -- holds it in a
+  `ContextVar`, and echoes it back in the `X-Request-Id` response header. A logging filter stamps
+  it onto every `app.*` record, so no call site has to pass it, and interleaved logs from
+  concurrent requests on the single deployed instance can be separated. It wraps the *built*
+  middleware stack (`_FinanceApp.build_middleware_stack` in `app/main.py`), outside Starlette's
+  `ServerErrorMiddleware` and CORS, because `add_middleware()` can only place middleware inside
+  `ServerErrorMiddleware`, which sends the 500 itself. So an unhandled 500 and a CORS preflight
+  carry the header too (and the security headers), and the 500's logged traceback carries the
+  same id. `tests/test_request_id.py` pins both. An inbound id
+  is attacker-controlled text that reaches the logs, so it is dropped (and replaced) unless it is
+  short and alphanumeric plus `-_.` -- a newline in it could otherwise forge a whole log line. The
+  id is never added to the JSON body: the error shape stays `{ code, message, field_errors }`.
 - **Constraint races become normal responses, not 500s.** `transaction_service.create_transaction`
   catches the `IntegrityError` from a concurrent duplicate `Idempotency-Key` or recurring
-  occurrence, rolls back, and returns the row that won the race.
+  occurrence, rolls back only its own SAVEPOINT (`begin_nested`), and returns the row that won
+  the race. Everything else pending in the request's transaction is kept. A full `rollback()`
+  here used to discard it, which is how earlier notifications in the same request were silently
+  lost. The notification, merchant-rule, and sync duplicate-insert paths follow the same pattern.
 - **Unconfigured integrations don't fail silently.** AI, OCR, storage, and sync fall back to
   labeled mock providers. Missing *required* settings (DB URL, JWT secret of 32+ characters,
   and so on) fail at startup (`app/core/config.py`).
@@ -123,7 +141,10 @@ pass.
 
 - **Inline page error panels aren't live regions.** Form errors use `role="alert"`, but most
   page-level red panels are plain `<div>`s, so screen readers don't announce them automatically.
-- **Server-side error logs** include method, path, and traceback, but no request ID or user ID
-  (CLAUDE.md §17 asks for both).
+- **Server-side error logs** include method, path, traceback and a request id (see §1), but no
+  user ID. CLAUDE.md §17 asks for both; the user id is not plumbed through because the exception
+  handler sees only the request, and the authenticated user is resolved per-route by a dependency
+  rather than stored on `request.state`.
 - **No remote error reporting** (Sentry or similar) for client-side exceptions. Boundaries log to
-  the browser console only.
+  the browser console only, and backend logs go to Render's log stream with no alerting on top.
+- **Inline page error panels aren't live regions** (see above).

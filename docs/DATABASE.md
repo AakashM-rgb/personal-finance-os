@@ -2,7 +2,7 @@
 
 PostgreSQL, managed only through Alembic (`backend/migrations/`). This page was written from
 `backend/app/models/*.py` and `backend/migrations/versions/*.py` at migration head
-`a3f9c1d2e7b4`. Where it disagrees with the code, the code wins.
+`d7a1e4c9b3f2`. Where it disagrees with the code, the code wins.
 
 ## Conventions (every table)
 
@@ -14,6 +14,7 @@ PostgreSQL, managed only through Alembic (`backend/migrations/`). This page was 
 | Transaction amounts are always positive. The sign comes from `type`. | `CHECK (amount_minor > 0)` |
 | Enums are stored as strings (`native_enum=False`), not Postgres enum types | `str_enum_column` in `app/models/base.py` |
 | User-owned rows carry `user_id → users.id ON DELETE CASCADE` | Deleting a user removes all of their data. `audit_logs` is the exception (`SET NULL`), so the audit trail survives. |
+| Every table in `public` has row level security enabled, with no policies | Migration `d7a1e4c9b3f2`; see "Access control and Supabase's Data API" below. A migration that creates a table must also `ENABLE ROW LEVEL SECURITY` on it. `tests/test_rls_hardening.py` fails otherwise. |
 | Timestamps are `timestamptz`. Month and day bucketing is done in UTC. | `date_trunc(..., 'UTC')` in `transaction_repository.py`; `app/services/month_bounds.py` |
 
 ## Entity relationships
@@ -39,6 +40,7 @@ users 1─* linked_accounts 1─* sync_runs
 users 1─* merchant_category_rules *─1 categories
 
 login_failures                          (standalone: keyed by an email HMAC, no FK)
+data_correction_runs                    (standalone: migration bookkeeping, no FK)
 ```
 
 ## Tables
@@ -50,7 +52,8 @@ login_failures                          (standalone: keyed by an email HMAC, no 
 | `users` | `email` (unique, indexed), `password_hash` (Argon2 via passlib), `full_name`, `is_active`, `email_verified_at` | `email_verified_at` exists as a column, but no verification flow is implemented yet (see README, current status). |
 | `user_settings` | `user_id` (unique), `currency` (default `INR`), `theme`, `ai_enabled` (default true), `ai_categorization_enabled` (default false), `notification_preferences` (JSONB) | 1:1 with `users`. `currency` is the base currency that every aggregate is computed in. |
 | `sessions` | `user_id`, `family_id` (indexed), `refresh_token_hash`, `user_agent`, `ip_address`, `expires_at`, `revoked_at` | Backs refresh-token rotation and "log out everywhere". Only a hash is stored, never the raw token. `family_id` groups one login's chain of rotated rows; access tokens carry it as `sid` and stop working once the family has no live row. |
-| `audit_logs` | `user_id` (nullable, SET NULL), `action` (indexed), `entity_type`, `entity_id`, `ip_address`, `user_agent`, `metadata_json` | Actions currently written: `user.register`, `user.login`, `user.login_failed`, `user.logout_all`, `session.reuse_detected`, `linked_account.link_initiated`, `linked_account.link_completed`, `linked_account.revoked`, `linked_account.sync_triggered`, `user.login_throttled`, `user.password_changed`, `user.password_change_failed`, `user.password_change_throttled`, `account.balance_updated` (metadata: `account_type`, `previous_balance_minor`, `new_balance_minor`). |
+| `audit_logs` | `user_id` (nullable, SET NULL), `action` (indexed), `entity_type`, `entity_id`, `ip_address`, `user_agent`, `metadata_json` | Actions currently written: `user.register`, `user.login`, `user.login_failed`, `user.logout_all`, `session.reuse_detected`, `linked_account.link_initiated`, `linked_account.link_completed`, `linked_account.revoked`, `linked_account.sync_triggered`, `user.login_throttled`, `user.password_changed`, `user.password_change_failed`, `user.password_change_throttled`, `account.balance_updated` (metadata: `account_type`, `previous_balance_minor`, `new_balance_minor`). Written only by migration `c8e4a1f6b2d9`: `account.balance_corrected`, `account.balance_correction_skipped`, `account.balance_correction_reverted`, `account.balance_correction_revert_skipped` (per card, with the amounts involved), and the summary rows `ledger.card_balance_correction` / `ledger.card_balance_correction_reverted` (`user_id` NULL, `entity_type` `migration`). |
+| `data_correction_runs` | `revision`, `direction` (`upgrade` / `downgrade`), `mode`, `ran_at`, `details` (JSONB) | One invocation of a data-correction migration. Written only by migrations (today `c8e4a1f6b2d9`) and read only by their own safeguards; no service or endpoint touches it. Deliberately **not user-owned and no FK** -- it holds no user data. It is the durable answer to "has this correction already run?", duplicating the `ledger.card_balance_correction` audit row so the guard survives a purge of `audit_logs`; the migration reads whichever record is older. **Nothing may prune it, and the downgrade does not drop it** -- a reverted correction still happened, and the next upgrade needs to know. Index `(revision, ran_at)`. |
 | `login_failures` | `account_key` (HMAC-SHA256 of the normalized login email, 64 hex chars), `created_at` (indexed) | Backs the per-account login throttle (`app/services/login_throttle.py`). Deliberately **not user-owned and no FK**: attempts against unregistered emails are throttled the same way, so rows can't reference `users`. The email is never stored, only a keyed HMAC that can't be matched to guessed emails without the server secret. Composite index `(account_key, created_at)` serves the per-account count. Rows older than the throttle window are pruned on every recorded failure, and a successful login deletes that account's rows. |
 
 ### Core ledger
@@ -70,7 +73,8 @@ login_failures                          (standalone: keyed by an email HMAC, no 
   so transfers are excluded by how the query is built, not by per-query discipline.
 - `uq_transactions_user_idempotency_key (user_id, idempotency_key)`: a retried
   `POST /transactions` with the same `Idempotency-Key` returns the original row. NULL keys never
-  collide.
+  collide. Keys starting with `server:` are written only by the server (receipt bookings) and
+  are refused from clients; see ARCHITECTURE.md, "Idempotent writes".
 - `uq_transactions_recurring_occurrence (recurring_transaction_id, occurred_at)`: the
   database-level guarantee that recurring generation is idempotent.
 - `uq_transactions_linked_account_external_id` (partial, `WHERE linked_account_id IS NOT NULL`):
@@ -105,8 +109,8 @@ login_failures                          (standalone: keyed by an email HMAC, no 
 
 | Relationship | `ON DELETE` | Why |
 |---|---|---|
-| any `user_id → users` | CASCADE | Account deletion must remove all of the user's data. |
-| `audit_logs.user_id` | SET NULL | The audit trail outlives the user row. |
+| any `user_id → users` | CASCADE | Account deletion (`POST /auth/delete-account`) removes all of the user's data with one `DELETE FROM users`. |
+| `audit_logs.user_id` | SET NULL | The audit trail outlives the user row. On account deletion the user's rows are first stripped of `ip_address`, `user_agent` and `metadata_json` (which can hold balances), keeping only the action and time, and the deletion is recorded as `user.account_deleted` without any of them. |
 | `transactions.account_id` / `transfer_account_id` | RESTRICT | Ledger history must never silently disappear. Accounts are archived instead. |
 | `transactions.category_id` | SET NULL | The transaction survives and falls back to "Uncategorized". |
 | `transactions.recurring_transaction_id` | SET NULL | Deleting a schedule detaches, but keeps, the transactions it already generated. |
@@ -116,6 +120,7 @@ login_failures                          (standalone: keyed by an email HMAC, no 
 | `budget_items.category_id`, `merchant_category_rules.category_id` | CASCADE | Rules and limits for a deleted category have nothing left to apply to. |
 | `receipts.transaction_id`, `linked_accounts.account_id`, `transactions.linked_account_id` | SET NULL | Keep the document and the history. |
 | `login_failures` | none (no FK) | Short-lived throttle counters keyed by an email HMAC (login) or a user-id HMAC under a separate key (password change). Not user data; they expire within the throttle window. |
+| `data_correction_runs` | none (no FK) | Migration bookkeeping, not user data. Never pruned and never dropped, including by `downgrade()`: it is what stops an already-applied data correction from being applied twice. |
 
 ## Migration chain
 
@@ -138,11 +143,34 @@ Linear, single head. Each file has both `upgrade()` and `downgrade()`.
 | 13 | `bf0fbd916161` | `merchant_category_rules` |
 | 14 | `43b64866b554` | `user_settings.ai_categorization_enabled` |
 | 15 | `5d7e1c2a9b30` | `login_failures` (per-account login throttle) |
-| 16 | `a3f9c1d2e7b4` | `sessions.family_id` (backfilled to `id`; downgrade drops only the column) (**head**) |
+| 16 | `a3f9c1d2e7b4` | `sessions.family_id` (backfilled to `id`; downgrade drops only the column) |
+| 17 | `c8e4a1f6b2d9` | `data_correction_runs` (its own run record, kept by the downgrade). F-001 data correction: each credit card's `balance_minor` corrected by `−2·D` (gated by `-x card_balance_correction=apply`, audit-logged, relative downgrade, and refused for any card the fixed code has touched since the first run; see DEPLOYMENT.md, Lockstep deploy) |
+| 18 | `d7a1e4c9b3f2` | No tables. Enables RLS on every `public` table and revokes every privilege of Supabase's `anon` and `authenticated` roles, including default privileges for future objects (see below). Downgrade keeps the protection unless `-x rls_hardening=revert`, and never re-grants (**head**) |
 
 ```bash
 cd backend
-.venv/Scripts/alembic heads      # expect exactly one head: a3f9c1d2e7b4
+.venv/Scripts/alembic heads      # expect exactly one head: d7a1e4c9b3f2
 .venv/Scripts/alembic current    # which revision DATABASE_URL is at
 .venv/Scripts/alembic check      # fails if the models have drifted from the migrations
 ```
+
+## Access control and Supabase's Data API
+
+Authorization lives in the application: every repository query is scoped to the authenticated
+`user_id`. The database adds one boundary of its own, against Supabase's auto-generated REST
+API (PostgREST). That API serves the exposed schemas (`public` by default) as the roles `anon`
+and `authenticated` to anyone who has the project's publishable key. The app never uses it.
+
+| Role | What it is | Access to app tables after `d7a1e4c9b3f2` |
+|---|---|---|
+| `postgres` (Supabase) / the migrating role (local, CI) | The role the backend connects as through `DATABASE_URL`. It owns every table and runs the migrations. On Supabase it is not a superuser but has `BYPASSRLS`. | Full. A table's owner is not subject to its RLS unless `FORCE ROW LEVEL SECURITY` is set, and it is not. |
+| `anon`, `authenticated` | Supabase's Data API roles | None. Every table, sequence and function privilege is revoked, including the default privileges that used to grant them every new table. RLS with no policy also hides every row if a grant is ever restored by mistake. |
+| `service_role` | Supabase's server-side key; bypasses RLS by design | Unchanged. Not used by this app; keep its key out of every client. |
+| `supabase_admin` | Supabase's own role | Unchanged. Its default privileges can only be changed by itself, and apply only to objects it creates, never to tables these migrations create. |
+
+Verified read-only against production on 2026-11-22: the backend's statements (Alembic's and the
+app's) run as `postgres`, which owns all 20 tables, and every `anon`/`authenticated` grant on
+them was made by `postgres`, so `postgres` can revoke them. The migration has **not** been
+applied to production. Where the Supabase roles don't exist (local PostgreSQL, CI by default),
+the migration only enables RLS.
+
