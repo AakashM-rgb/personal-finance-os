@@ -94,10 +94,20 @@ export function AccountCard({ account, onEdit, onDelete }: AccountCardProps) {
             {utilization.toFixed(2)}% utilized · {formatMoney(creditCard.available_credit_minor, account.currency)}{" "}
             available of {formatMoney(creditCard.credit_limit_minor, account.currency)}
           </p>
-          {utilizationLevel === "high" && (
+          {/* Over limit is its own, more specific statement than "high
+              utilization": available credit is 0 and the overshoot is a real
+              amount the user needs to see. */}
+          {creditCard.over_limit_minor > 0 ? (
             <p className="text-xs font-medium text-red-600 dark:text-red-400">
-              High utilization - consider paying this down.
+              {formatMoney(creditCard.over_limit_minor, account.currency)} over the credit limit -
+              pay this down to restore available credit.
             </p>
+          ) : (
+            utilizationLevel === "high" && (
+              <p className="text-xs font-medium text-red-600 dark:text-red-400">
+                High utilization - consider paying this down.
+              </p>
+            )
           )}
         </div>
       )}

@@ -49,7 +49,7 @@ _COMPARE_RE = re.compile(r"\bcompar", re.IGNORECASE)
 _RECURRING_RE = re.compile(r"\brecurring\b|\bsubscription", re.IGNORECASE)
 _SAVINGS_RE = re.compile(r"\bhow much\b.*\bsave\b|\bshould i save\b", re.IGNORECASE)
 _BUDGET_RE = re.compile(r"\bbudget", re.IGNORECASE)
-_BALANCE_RE = re.compile(r"\bbalance\b|\bnet worth\b|\bhow much.*\bin my account", re.IGNORECASE)
+_BALANCE_RE = re.compile(r"\bbalances?\b|\bnet worth\b|\bhow much.*\bin my account", re.IGNORECASE)
 _TRANSACTIONS_RE = re.compile(r"\btransactions?\b|\bpurchases?\b", re.IGNORECASE)
 
 # The first money-looking number in the text - digits with optional comma

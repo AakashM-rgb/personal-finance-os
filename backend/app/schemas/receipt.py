@@ -18,6 +18,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.money import NonNegativeMoneyMinor
+
 # 10 MB: generous enough for a high-resolution phone photo of a paper
 # receipt or a multi-page scanned PDF, while still bounded well below
 # anything that could meaningfully strain request handling or storage at
@@ -34,8 +36,8 @@ class ReceiptItemData(BaseModel):
 
     description: str = Field(min_length=1, max_length=300)
     quantity: str | None = Field(default=None, max_length=30)
-    unit_price_minor: int | None = Field(default=None, ge=0)
-    line_total_minor: int | None = Field(default=None, ge=0)
+    unit_price_minor: NonNegativeMoneyMinor | None = None
+    line_total_minor: NonNegativeMoneyMinor | None = None
 
 
 class ReceiptExtraction(BaseModel):
@@ -73,8 +75,8 @@ class ReceiptConfirmRequest(BaseModel):
 
     merchant: str | None = Field(default=None, max_length=200)
     date: date_type | None = None
-    total_minor: int | None = Field(default=None, ge=0)
-    tax_minor: int | None = Field(default=None, ge=0)
+    total_minor: NonNegativeMoneyMinor | None = None
+    tax_minor: NonNegativeMoneyMinor | None = None
     items: list[ReceiptItemData] = Field(default_factory=list)
     category_id: UUID | None = None
 

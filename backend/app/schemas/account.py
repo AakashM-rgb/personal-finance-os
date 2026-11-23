@@ -11,6 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.account import AccountType
+from app.schemas.money import NonNegativeMoneyMinor, PositiveMoneyMinor, SignedMoneyMinor
 
 # Kept small and explicit rather than open-ended, matching the spec's stated
 # multi-currency roadmap (INR first-class today).
@@ -20,10 +21,10 @@ SUPPORTED_CURRENCIES = {"INR", "USD", "EUR", "GBP", "JPY"}
 class CreditCardFields(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    credit_limit_minor: int = Field(gt=0)
+    credit_limit_minor: PositiveMoneyMinor
     statement_day: int = Field(ge=1, le=31)
     payment_due_day: int = Field(ge=1, le=31)
-    minimum_payment_minor: int | None = Field(default=None, ge=0)
+    minimum_payment_minor: NonNegativeMoneyMinor | None = None
 
 
 class AccountCreate(BaseModel):
@@ -31,7 +32,7 @@ class AccountCreate(BaseModel):
 
     name: str = Field(min_length=1, max_length=200)
     type: AccountType
-    balance_minor: int = 0
+    balance_minor: SignedMoneyMinor = 0
     currency: str = "INR"
     institution_name: str | None = Field(default=None, max_length=200)
     credit_card: CreditCardFields | None = None
@@ -52,7 +53,7 @@ class AccountUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    balance_minor: int | None = None
+    balance_minor: SignedMoneyMinor | None = None
     currency: str | None = None
     institution_name: str | None = Field(default=None, max_length=200)
     credit_card: CreditCardFields | None = None
@@ -73,6 +74,7 @@ class CreditCardDetailsRead(BaseModel):
     minimum_payment_minor: int | None
     # Computed, never stored, so they can never drift from balance_minor/credit_limit_minor.
     available_credit_minor: int
+    over_limit_minor: int
     utilization_percent: float
 
 

@@ -72,6 +72,11 @@ def test_account_balances() -> None:
     assert result.intent == Intent.ACCOUNT_BALANCES
 
 
+def test_plural_account_balances() -> None:
+    result = classify_intent("What are my account balances?")
+    assert result.intent == Intent.ACCOUNT_BALANCES
+
+
 def test_transactions_lookup() -> None:
     result = classify_intent("Show me my recent transactions")
     assert result.intent == Intent.TRANSACTIONS_LOOKUP

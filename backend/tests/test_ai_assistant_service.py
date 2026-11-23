@@ -298,6 +298,35 @@ async def test_afford_question_exceeding_balance_is_honest_about_it(
     assert "exceed" in response.answer.lower()
 
 
+async def test_balances_answer_describes_cards_as_owed_available_and_over_limit(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    user_id, headers = await _register(client, email="cardbalances@example.com")
+    card_details = {"credit_limit_minor": 100_000_00, "statement_day": 5, "payment_due_day": 25}
+    await _create_account(
+        client, headers, name="Over Card", type="credit_card", balance_minor=120_000_00,
+        credit_card=card_details,
+    )
+    await _create_account(
+        client, headers, name="Overpaid Card", type="credit_card", balance_minor=-5_000_00,
+        credit_card=card_details,
+    )
+
+    response = await ai_assistant_service.ask(
+        db_session, user_id=user_id, message="What are my account balances?"
+    )
+    assert (
+        "Over Card (credit_card): 120000.00 INR owed, 0.00 INR available credit, "
+        "20000.00 INR over the credit limit" in response.answer
+    )
+    assert (
+        "Overpaid Card (credit_card): 5000.00 INR credit balance, "
+        "105000.00 INR available credit" in response.answer
+    )
+    assert "-5000.00" not in response.answer
+    assert "-20000.00" not in response.answer
+
+
 # --- tool usage metadata is safe (name + success only) --------------------------------------
 
 

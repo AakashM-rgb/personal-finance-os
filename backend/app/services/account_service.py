@@ -67,8 +67,33 @@ def calculate_credit_utilization_percent(balance_minor: int, credit_limit_minor:
     return round((max(balance_minor, 0) / credit_limit_minor) * 100, 2)
 
 
+def calculate_available_credit_minor(balance_minor: int, credit_limit_minor: int) -> int:
+    """How much more the card can be spent on, never negative.
+
+    `balance_minor` is the amount owed, so this is limit - owed. Two edge
+    cases decide the shape of this function:
+
+    * **Over limit** (owed > limit): there is nothing available. The raw
+      subtraction is negative, and a negative "available credit" is not a
+      quantity worth showing anyone - its magnitude is the over-limit amount,
+      which `calculate_over_limit_minor` reports under its own name instead.
+    * **Credit balance** (owed < 0, the card was overpaid): spending power is
+      genuinely limit + overpayment, which exceeds the limit. That is not
+      clamped, because it is real money on the card.
+    """
+    return max(credit_limit_minor - balance_minor, 0)
+
+
+def calculate_over_limit_minor(balance_minor: int, credit_limit_minor: int) -> int:
+    """How far past the credit limit the amount owed is, or 0 when within it.
+    The counterpart to `calculate_available_credit_minor`: exactly one of the
+    two is non-zero unless the card sits exactly on its limit."""
+    if credit_limit_minor <= 0:
+        return 0
+    return max(balance_minor - credit_limit_minor, 0)
+
+
 def _credit_card_read(details: CreditCardDetails, balance_minor: int) -> CreditCardDetailsRead:
-    available_credit_minor = details.credit_limit_minor - balance_minor
     utilization_percent = calculate_credit_utilization_percent(
         balance_minor, details.credit_limit_minor
     )
@@ -77,7 +102,10 @@ def _credit_card_read(details: CreditCardDetails, balance_minor: int) -> CreditC
         statement_day=details.statement_day,
         payment_due_day=details.payment_due_day,
         minimum_payment_minor=details.minimum_payment_minor,
-        available_credit_minor=available_credit_minor,
+        available_credit_minor=calculate_available_credit_minor(
+            balance_minor, details.credit_limit_minor
+        ),
+        over_limit_minor=calculate_over_limit_minor(balance_minor, details.credit_limit_minor),
         utilization_percent=utilization_percent,
     )
 

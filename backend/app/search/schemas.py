@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.ai.tools.schemas import TransactionSummary
 from app.models.transaction import TransactionType
+from app.schemas.money import NonNegativeMoneyMinor
 
 MAX_RESULT_LIMIT = 100
 DEFAULT_RESULT_LIMIT = 20
@@ -40,8 +41,11 @@ class FinancialSearchQuery(BaseModel):
     category_id: uuid.UUID | None = None
     start_date: date | None = None
     end_date: date | None = None
-    min_amount_minor: int | None = Field(default=None, ge=0)
-    max_amount_minor: int | None = Field(default=None, ge=0)
+    # Bounded like every other money input: an amount parsed out of free
+    # text (or returned by the AI interpreter) is compared against a BIGINT
+    # column, and a value past BIGINT would fail in the driver as a 500.
+    min_amount_minor: NonNegativeMoneyMinor | None = None
+    max_amount_minor: NonNegativeMoneyMinor | None = None
     transaction_type: TransactionType | None = None
     days_of_week: list[int] | None = None
     subscriptions_only: bool = False

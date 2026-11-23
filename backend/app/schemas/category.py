@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.money import NonNegativeMoneyMinor
+
 _HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
@@ -15,7 +17,7 @@ class CategoryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     icon: str = Field(min_length=1, max_length=50)
     color: str
-    budget_minor: int | None = Field(default=None, ge=0)
+    budget_minor: NonNegativeMoneyMinor | None = None
     parent_id: UUID | None = None
 
     @field_validator("color")
@@ -32,7 +34,7 @@ class CategoryUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     icon: str | None = Field(default=None, min_length=1, max_length=50)
     color: str | None = None
-    budget_minor: int | None = Field(default=None, ge=0)
+    budget_minor: NonNegativeMoneyMinor | None = None
     parent_id: UUID | None = None
     clear_parent: bool = False  # explicit flag - parent_id=None alone means "no change"
 

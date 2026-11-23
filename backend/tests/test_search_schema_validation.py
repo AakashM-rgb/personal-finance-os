@@ -11,6 +11,7 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
+from app.schemas.money import MAX_MONEY_MINOR
 from app.search.schemas import MAX_RESULT_LIMIT, FinancialSearchQuery, SearchRequest
 
 
@@ -166,3 +167,36 @@ def test_search_request_defaults() -> None:
     request = SearchRequest(query="food last month")
     assert request.confirmed is False
     assert request.category_override_id is None
+
+
+# --- amount bounds (the same MAX_MONEY_MINOR every other money input uses) -----------------
+
+_AMOUNT_FIELDS = ("min_amount_minor", "max_amount_minor")
+
+
+@pytest.mark.parametrize("field", _AMOUNT_FIELDS)
+@pytest.mark.parametrize("value", [0, 50_000, MAX_MONEY_MINOR])
+def test_amount_within_bounds_is_accepted(field: str, value: int) -> None:
+    assert getattr(FinancialSearchQuery(**{field: value}), field) == value
+
+
+@pytest.mark.parametrize("field", _AMOUNT_FIELDS)
+@pytest.mark.parametrize(
+    "value",
+    [
+        MAX_MONEY_MINOR + 1,
+        2**63,  # one past PostgreSQL BIGINT: would fail in the driver as a 500
+        10**22,
+    ],
+)
+def test_amount_above_the_money_ceiling_is_rejected(field: str, value: int) -> None:
+    with pytest.raises(ValidationError):
+        FinancialSearchQuery(**{field: value})
+
+
+@pytest.mark.parametrize("field", _AMOUNT_FIELDS)
+def test_negative_amount_is_rejected(field: str) -> None:
+    """The deterministic parser can't produce one, but the AI-assisted
+    interpreter's output is untrusted and goes through this same schema."""
+    with pytest.raises(ValidationError):
+        FinancialSearchQuery(**{field: -1})

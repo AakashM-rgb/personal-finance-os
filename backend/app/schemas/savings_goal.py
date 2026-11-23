@@ -13,14 +13,15 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.account import SUPPORTED_CURRENCIES
+from app.schemas.money import NonNegativeMoneyMinor, PositiveMoneyMinor
 
 
 class SavingsGoalCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=200)
-    target_amount_minor: int = Field(gt=0)
-    current_amount_minor: int = Field(default=0, ge=0)
+    target_amount_minor: PositiveMoneyMinor
+    current_amount_minor: NonNegativeMoneyMinor = 0
     currency: str = "INR"
     target_date: date
 
@@ -37,8 +38,8 @@ class SavingsGoalUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    target_amount_minor: int | None = Field(default=None, gt=0)
-    current_amount_minor: int | None = Field(default=None, ge=0)
+    target_amount_minor: PositiveMoneyMinor | None = None
+    current_amount_minor: NonNegativeMoneyMinor | None = None
     currency: str | None = None
     target_date: date | None = None
 

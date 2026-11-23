@@ -102,6 +102,23 @@ def test_debt_burden_uses_the_worst_credit_card_not_an_average() -> None:
     assert debt_factor.score == 5.0  # 100 - 95 (the worse of the two cards)
 
 
+def test_an_over_limit_card_scores_zero_debt_and_reports_the_real_utilization() -> None:
+    """Utilization above 100% is a real state (the card is over its limit);
+    the factor floors at 0 rather than going negative, and the reason shown
+    to the user is the literal figure used."""
+    result = calculate_health_score(
+        total_income_minor=100000,
+        total_expense_minor=50000,
+        credit_card_utilizations_percent=[120.0],
+        recurring_expense_minor=0,
+        daily_expense_series=[1500] * 30,
+        days_elapsed=30,
+    )
+    debt_factor = next(f for f in result.factors if f.key == "debt_burden")
+    assert debt_factor.score == 0.0
+    assert debt_factor.detail == "Your highest credit card utilization is 120%."
+
+
 def test_no_credit_cards_means_full_marks_for_debt_burden() -> None:
     result = calculate_health_score(
         total_income_minor=100000,

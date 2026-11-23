@@ -22,6 +22,8 @@ rather than a fabricated one.
 can mistake this for a real external AI call.
 """
 
+from typing import Any
+
 from app.ai.provider.base import (
     AIProvider,
     ConversationMessage,
@@ -360,6 +362,25 @@ def _compose_budget_answer(outcomes: tuple[ToolOutcome, ...]) -> str:
     return "\n".join(lines)
 
 
+def _describe_balance(account: dict[str, Any], currency: str) -> str:
+    """A card's balance_minor is the amount owed (negative = a credit balance),
+    so printing it raw would show an overpaid card as a negative number. This
+    mirrors the wording of the account views (frontend lib/accounts.ts)."""
+    balance_minor = account["balance_minor"]
+    card = account.get("credit_card")
+    if account["type"] != "credit_card" or card is None:
+        return format_money(balance_minor, currency)
+
+    if balance_minor < 0:
+        text = f"{format_money(-balance_minor, currency)} credit balance"
+    else:
+        text = f"{format_money(balance_minor, currency)} owed"
+    text += f", {format_money(card['available_credit_minor'], currency)} available credit"
+    if card["over_limit_minor"] > 0:
+        text += f", {format_money(card['over_limit_minor'], currency)} over the credit limit"
+    return text
+
+
 def _compose_balances_answer(outcomes: tuple[ToolOutcome, ...]) -> str:
     outcome = _outcome_by_name(outcomes, "get_account_balances")
     if outcome is None or outcome.is_error:
@@ -373,8 +394,7 @@ def _compose_balances_answer(outcomes: tuple[ToolOutcome, ...]) -> str:
     lines = ["Here are your account balances:"]
     for account in accounts:
         lines.append(
-            f"- {account['name']} ({account['type']}): "
-            f"{format_money(account['balance_minor'], currency)}"
+            f"- {account['name']} ({account['type']}): {_describe_balance(account, currency)}"
         )
     lines.append(
         f"\nNet worth: {format_money(data.get('net_worth_minor', 0), currency)} "

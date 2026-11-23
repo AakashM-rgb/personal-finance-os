@@ -48,7 +48,10 @@ export interface CreditCardFields {
 }
 
 export interface CreditCardDetails extends CreditCardFields {
+  /** Never negative: 0 once the card is at or over its limit. */
   available_credit_minor: number;
+  /** How far the amount owed is past the limit, or 0 when within it. */
+  over_limit_minor: number;
   utilization_percent: number;
 }
 

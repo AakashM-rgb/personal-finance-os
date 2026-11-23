@@ -501,6 +501,30 @@ async def test_get_account_balances_computes_real_net_worth(
     assert len(result.data["accounts"]) == 2
 
 
+async def test_get_account_balances_reports_over_limit_cards_without_negative_credit(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    user_id, headers = await _register_with_headers(client, email="overlimit-ai@example.com")
+    await _create_account(
+        client,
+        headers,
+        name="Card",
+        type="credit_card",
+        balance_minor=360000,
+        credit_card={"credit_limit_minor": 300000, "statement_day": 1, "payment_due_day": 20},
+    )
+
+    result = await _call(
+        db_session, user_id=user_id, tool_name="get_account_balances", arguments={}
+    )
+    assert result.ok is True
+    card = result.data["accounts"][0]["credit_card"]
+    assert card["available_credit_minor"] == 0
+    assert card["over_limit_minor"] == 60000
+    assert card["utilization_percent"] == 120.0
+    assert result.data["total_liabilities_minor"] == 360000
+
+
 async def test_compare_periods_current_vs_previous_month_default(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:

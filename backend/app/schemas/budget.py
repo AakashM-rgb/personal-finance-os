@@ -9,20 +9,22 @@ category is really "delete this, create a different one," not an edit.
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
+
+from app.schemas.money import PositiveMoneyMinor
 
 
 class BudgetItemCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     category_id: UUID
-    amount_minor: int = Field(gt=0)
+    amount_minor: PositiveMoneyMinor
 
 
 class BudgetItemUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    amount_minor: int = Field(gt=0)
+    amount_minor: PositiveMoneyMinor
 
 
 class BudgetItemRead(BaseModel):

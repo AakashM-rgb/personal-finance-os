@@ -31,7 +31,8 @@ function card(balanceMinor: number, utilizationPercent: number): Account {
       statement_day: 5,
       payment_due_day: 25,
       minimum_payment_minor: null,
-      available_credit_minor: 10000000 - balanceMinor,
+      available_credit_minor: Math.max(10000000 - balanceMinor, 0),
+      over_limit_minor: Math.max(balanceMinor - 10000000, 0),
       utilization_percent: utilizationPercent,
     },
     created_at: "2026-01-01T00:00:00Z",
@@ -104,6 +105,35 @@ describe("AccountCard credit-card balance", () => {
     expect(bar).toHaveStyle({ width: "100%" });
     expect(bar).toHaveAttribute("aria-valuenow", "100");
     expect(screen.getByText(/120\.00% utilized/)).toBeInTheDocument();
+  });
+
+  it("shows zero available credit and the overshoot when over the limit", () => {
+    renderCard(card(12000000, 120));
+
+    expect(screen.getByText(/₹0\.00 available of ₹1,00,000\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/₹20,000\.00 over the credit limit/)).toBeInTheDocument();
+    // The specific message replaces the generic one rather than stacking.
+    expect(screen.queryByText(/High utilization/)).not.toBeInTheDocument();
+  });
+
+  it("never shows a negative available credit", () => {
+    renderCard(card(12000000, 120));
+
+    expect(screen.queryByText(/-₹/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the generic warning for a high but within-limit card", () => {
+    renderCard(card(9500000, 95));
+
+    expect(screen.getByText(/High utilization/)).toBeInTheDocument();
+    expect(screen.queryByText(/over the credit limit/)).not.toBeInTheDocument();
+  });
+
+  it("counts an overpayment as spending power above the limit", () => {
+    renderCard(card(-500000, 0));
+
+    expect(screen.getByText(/₹1,05,000\.00 available of ₹1,00,000\.00/)).toBeInTheDocument();
+    expect(screen.queryByText(/over the credit limit/)).not.toBeInTheDocument();
   });
 
   it("labels a non-card account balance as a balance", () => {

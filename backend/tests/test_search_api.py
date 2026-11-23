@@ -229,6 +229,61 @@ async def test_unambiguous_query_executes_without_confirmation(
     assert data["requires_confirmation"] is False
 
 
+# --- amount bounds ---------------------------------------------------------------------------
+
+
+async def _search(client: AsyncClient, headers: dict, query: str) -> dict:
+    response = await client.post(
+        "/api/v1/search/financial", headers=headers, json={"query": query, "confirmed": True}
+    )
+    return {"status": response.status_code, "body": response.json()}
+
+
+async def test_a_normal_amount_filter_still_works(client: AsyncClient, auth_headers: dict) -> None:
+    result = await _search(client, auth_headers, "expenses over ₹500")
+
+    assert result["status"] == 200
+    assert result["body"]["data"]["interpretation"]["min_amount_minor"] == 50_000
+
+
+async def test_the_money_ceiling_itself_is_searchable(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    # 100,000,000,000 rupees = 10^13 paise = MAX_MONEY_MINOR exactly.
+    result = await _search(client, auth_headers, "expenses under 100000000000")
+
+    assert result["status"] == 200
+    assert result["body"]["data"]["interpretation"]["max_amount_minor"] == 10**13
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "expenses over 100000000000.01",  # one paisa past the ceiling
+        "expenses over 99999999999999999999",  # past PostgreSQL BIGINT
+        "expenses under 99999999999999999999k",
+    ],
+)
+async def test_an_amount_past_the_ceiling_is_a_clear_422_not_a_500(
+    client: AsyncClient, auth_headers: dict, query: str
+) -> None:
+    result = await _search(client, auth_headers, query)
+
+    assert result["status"] == 422
+    error = result["body"]["error"]
+    assert error["code"] == "search_interpretation_failed"
+    assert "larger than any amount the app can store" in error["message"]
+
+
+async def test_a_minus_sign_never_becomes_a_negative_amount_filter(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    result = await _search(client, auth_headers, "expenses over -500 at Amazon")
+
+    assert result["status"] == 200
+    assert result["body"]["data"]["interpretation"]["min_amount_minor"] is None
+
+
 # --- cross-user isolation --------------------------------------------------------------------
 
 

@@ -11,6 +11,20 @@
  * matching the backend's own app.schemas.account.SUPPORTED_CURRENCIES. */
 export const CURRENCIES = ["INR", "USD", "EUR", "GBP", "JPY"] as const;
 
+/**
+ * The largest magnitude a money value may have, in minor units -- mirrors
+ * `MAX_MONEY_MINOR` in backend/app/schemas/money.py, which the API enforces.
+ *
+ * Two reasons this is a parsing rule and not just a server concern. A typed
+ * amount above `Number.MAX_SAFE_INTEGER` (about 9x10^15) cannot survive
+ * `parseInt` exactly, so without a ceiling the app would silently send a
+ * *different* number than the user typed -- the one thing money handling here
+ * must never do. And rejecting it at the input turns a server 422 into
+ * immediate inline feedback (CLAUDE.md §7: client validation mirrors the
+ * backend's constraints).
+ */
+export const MAX_MONEY_MINOR = 10 ** 13;
+
 const DECIMALS_BY_CURRENCY: Record<string, number> = {
   INR: 2,
   USD: 2,
@@ -52,7 +66,10 @@ export function minorUnitsToInputValue(amountMinor: number, currency = "INR"): s
 
 /**
  * Parses a user-typed amount (e.g. "1,234.5") into integer minor units.
- * Returns null if the input isn't a valid amount for the given currency.
+ * Returns null if the input isn't a valid amount for the given currency,
+ * which includes any magnitude above `MAX_MONEY_MINOR` -- callers already
+ * surface null as "enter a valid amount", and a number too large to represent
+ * exactly is not a valid amount.
  */
 export function parseMoneyToMinorUnits(input: string, currency = "INR"): number | null {
   const decimals = decimalsFor(currency);
@@ -60,7 +77,8 @@ export function parseMoneyToMinorUnits(input: string, currency = "INR"): number 
   if (cleaned === "") return null;
 
   if (decimals === 0) {
-    return /^-?\d+$/.test(cleaned) ? parseInt(cleaned, 10) : null;
+    if (!/^-?\d+$/.test(cleaned)) return null;
+    return withinBounds(parseInt(cleaned, 10));
   }
 
   const pattern = new RegExp(`^(-)?(\\d+)(?:\\.(\\d{1,${decimals}}))?$`);
@@ -70,5 +88,12 @@ export function parseMoneyToMinorUnits(input: string, currency = "INR"): number 
   const [, sign, wholePart, fractionPart = ""] = match;
   const paddedFraction = fractionPart.padEnd(decimals, "0");
   const magnitude = parseInt(wholePart + paddedFraction, 10);
-  return sign ? -magnitude : magnitude;
+  return withinBounds(sign ? -magnitude : magnitude);
+}
+
+/** null for anything outside the representable, API-accepted range. */
+function withinBounds(amountMinor: number): number | null {
+  if (!Number.isSafeInteger(amountMinor)) return null;
+  if (Math.abs(amountMinor) > MAX_MONEY_MINOR) return null;
+  return amountMinor;
 }

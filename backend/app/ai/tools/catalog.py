@@ -103,7 +103,11 @@ TOOL_CATALOG: tuple[ToolSpec, ...] = (
         name="get_account_balances",
         description=(
             "Get the authenticated user's active account balances (bank, cash, credit card, "
-            "etc.) in their base currency, plus total assets, total liabilities, and net worth."
+            "etc.) in their base currency, plus total assets, total liabilities, and net worth. "
+            "For a credit_card account, balance_minor is the amount owed (a negative value is a "
+            "credit balance, i.e. the card was overpaid); credit_card.available_credit_minor is "
+            "never negative, and credit_card.over_limit_minor is how far the amount owed exceeds "
+            "the credit limit (0 when within it)."
         ),
         args_model=AccountBalancesArgs,
         executor=executors.execute_get_account_balances,

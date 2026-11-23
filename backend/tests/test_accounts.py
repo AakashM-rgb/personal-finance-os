@@ -96,13 +96,20 @@ async def test_credit_card_utilization_matches_spec_example(
 
 
 async def test_credit_card_utilization_edge_cases(client: AsyncClient, auth_headers: dict) -> None:
+    limit = 10000000
+    # (owed, utilization %, available credit, over limit)
     cases = [
-        (0, 0.0),  # no usage
-        (10000000, 100.0),  # fully utilized
-        (12000000, 120.0),  # over limit - allowed to exceed 100%, not clamped/hidden
-        (-500000, 0.0),  # credit balance (overpaid) - nothing owed, never negative
+        (0, 0.0, limit, 0),  # no usage
+        (10000000, 100.0, 0, 0),  # exactly on the limit
+        # Over limit: utilization is allowed to exceed 100% (not clamped or
+        # hidden), but available credit is 0 rather than a negative figure -
+        # the overshoot is reported as over_limit_minor instead.
+        (12000000, 120.0, 0, 2000000),
+        # Credit balance (overpaid): nothing owed, so utilization is never
+        # negative, and spending power genuinely exceeds the limit.
+        (-500000, 0.0, limit + 500000, 0),
     ]
-    for balance_minor, expected_percent in cases:
+    for balance_minor, expected_percent, expected_available, expected_over in cases:
         response = await client.post(
             "/api/v1/accounts",
             headers=auth_headers,
@@ -111,7 +118,7 @@ async def test_credit_card_utilization_edge_cases(client: AsyncClient, auth_head
                 "type": "credit_card",
                 "balance_minor": balance_minor,
                 "credit_card": {
-                    "credit_limit_minor": 10000000,
+                    "credit_limit_minor": limit,
                     "statement_day": 1,
                     "payment_due_day": 15,
                 },
@@ -120,7 +127,9 @@ async def test_credit_card_utilization_edge_cases(client: AsyncClient, auth_head
         assert response.status_code == 201, response.text
         credit_card = response.json()["data"]["credit_card"]
         assert credit_card["utilization_percent"] == expected_percent
-        assert credit_card["available_credit_minor"] == 10000000 - balance_minor
+        assert credit_card["available_credit_minor"] == expected_available
+        assert credit_card["over_limit_minor"] == expected_over
+        assert credit_card["available_credit_minor"] >= 0
 
 
 async def test_get_account_not_found_for_other_user(

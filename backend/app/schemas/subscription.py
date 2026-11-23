@@ -14,6 +14,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.recurring_transaction import RecurrenceFrequency
+from app.schemas.money import PositiveMoneyMinor
 
 
 class SubscriptionCreate(BaseModel):
@@ -22,7 +23,7 @@ class SubscriptionCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     account_id: UUID
     category_id: UUID | None = None
-    amount_minor: int = Field(gt=0)
+    amount_minor: PositiveMoneyMinor
     frequency: RecurrenceFrequency
     start_date: date
 
@@ -34,7 +35,7 @@ class SubscriptionUpdate(BaseModel):
     account_id: UUID | None = None
     category_id: UUID | None = None
     clear_category: bool = False
-    amount_minor: int | None = Field(default=None, gt=0)
+    amount_minor: PositiveMoneyMinor | None = None
     frequency: RecurrenceFrequency | None = None
 
 

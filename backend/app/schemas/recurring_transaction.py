@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.recurring_transaction import RecurrenceFrequency
 from app.models.transaction import TransactionType
+from app.schemas.money import PositiveMoneyMinor
 
 
 def _reject_transfer(value: TransactionType | None) -> TransactionType | None:
@@ -31,7 +32,7 @@ class RecurringTransactionCreate(BaseModel):
     account_id: UUID
     category_id: UUID | None = None
     type: TransactionType
-    amount_minor: int = Field(gt=0)
+    amount_minor: PositiveMoneyMinor
     frequency: RecurrenceFrequency
     start_date: date
 
@@ -51,7 +52,7 @@ class RecurringTransactionUpdate(BaseModel):
     category_id: UUID | None = None
     clear_category: bool = False
     type: TransactionType | None = None
-    amount_minor: int | None = Field(default=None, gt=0)
+    amount_minor: PositiveMoneyMinor | None = None
     frequency: RecurrenceFrequency | None = None
 
     @field_validator("type")

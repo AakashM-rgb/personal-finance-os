@@ -224,6 +224,18 @@ def _has_qualifying_signal(query: FinancialSearchQuery) -> bool:
     )
 
 
+_AMOUNT_FIELDS = frozenset({"min_amount_minor", "max_amount_minor"})
+
+
+def _amount_out_of_range(exc: ValidationError) -> bool:
+    return any(
+        error["type"] == "less_than_equal"
+        and bool(error["loc"])
+        and error["loc"][0] in _AMOUNT_FIELDS
+        for error in exc.errors()
+    )
+
+
 def _build_outcome(fields: dict, category_resolution: CategoryResolution) -> InterpretationOutcome:
     try:
         query = FinancialSearchQuery.model_validate(fields)
@@ -231,6 +243,11 @@ def _build_outcome(fields: dict, category_resolution: CategoryResolution) -> Int
         # Never let a raw pydantic error (or, for the AI-assisted path, a
         # malformed/hallucinated structure) reach the client as a generic
         # 500 - a failed interpretation is a clean, user-actionable 422.
+        if _amount_out_of_range(exc):
+            raise SearchInterpretationError(
+                "That amount is larger than any amount the app can store. "
+                "Try searching for a smaller amount."
+            ) from exc
         raise SearchInterpretationError(
             "Couldn't understand that search. Try rephrasing it."
         ) from exc

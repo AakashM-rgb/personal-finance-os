@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { formatMoney, minorUnitsToInputValue, parseMoneyToMinorUnits } from "@/lib/money";
+import {
+  formatMoney,
+  MAX_MONEY_MINOR,
+  minorUnitsToInputValue,
+  parseMoneyToMinorUnits,
+} from "@/lib/money";
 
 describe("formatMoney", () => {
   it("formats INR minor units with two decimal places", () => {
@@ -69,5 +74,42 @@ describe("parseMoneyToMinorUnits", () => {
   it("treats JPY as a zero-decimal currency", () => {
     expect(parseMoneyToMinorUnits("1500", "JPY")).toBe(1500);
     expect(parseMoneyToMinorUnits("15.5", "JPY")).toBeNull();
+  });
+});
+
+// F-006, client side: an amount too large to represent exactly must never be
+// silently turned into a different number and sent to the API.
+describe("parseMoneyToMinorUnits bounds", () => {
+  it("accepts the largest amount the API allows", () => {
+    expect(parseMoneyToMinorUnits("100000000000.00")).toBe(MAX_MONEY_MINOR);
+  });
+
+  it("rejects an amount above the API's ceiling", () => {
+    expect(parseMoneyToMinorUnits("100000000000.01")).toBeNull();
+    expect(parseMoneyToMinorUnits("999999999999999")).toBeNull();
+  });
+
+  it("rejects a magnitude that cannot be represented exactly", () => {
+    // parseInt would return 1e20 here - a different number than was typed.
+    expect(parseMoneyToMinorUnits("99999999999999999999")).toBeNull();
+  });
+
+  it("applies the same ceiling to negative amounts", () => {
+    expect(parseMoneyToMinorUnits("-100000000000.00")).toBe(-MAX_MONEY_MINOR);
+    expect(parseMoneyToMinorUnits("-100000000000.01")).toBeNull();
+  });
+
+  it("applies the ceiling to zero-decimal currencies too", () => {
+    expect(parseMoneyToMinorUnits(String(MAX_MONEY_MINOR), "JPY")).toBe(MAX_MONEY_MINOR);
+    expect(parseMoneyToMinorUnits(String(MAX_MONEY_MINOR + 1), "JPY")).toBeNull();
+  });
+
+  it("still accepts ordinary amounts unchanged", () => {
+    expect(parseMoneyToMinorUnits("1,234.5")).toBe(123450);
+    expect(parseMoneyToMinorUnits("0.01")).toBe(1);
+  });
+
+  it("matches the backend's MAX_MONEY_MINOR", () => {
+    expect(MAX_MONEY_MINOR).toBe(10 ** 13);
   });
 });

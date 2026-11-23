@@ -13,6 +13,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.transaction import TransactionType
+from app.schemas.money import PositiveMoneyMinor
 
 _MAX_TAGS = 10
 _MAX_TAG_LENGTH = 50
@@ -38,7 +39,7 @@ class TransactionCreate(BaseModel):
 
     account_id: UUID
     type: TransactionType
-    amount_minor: int = Field(gt=0)
+    amount_minor: PositiveMoneyMinor
     transfer_account_id: UUID | None = None
     category_id: UUID | None = None
 
@@ -62,7 +63,7 @@ class TransactionUpdate(BaseModel):
 
     account_id: UUID | None = None
     type: TransactionType | None = None
-    amount_minor: int | None = Field(default=None, gt=0)
+    amount_minor: PositiveMoneyMinor | None = None
     transfer_account_id: UUID | None = None
     category_id: UUID | None = None
     clear_category: bool = False
