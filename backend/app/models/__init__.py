@@ -6,6 +6,7 @@ from app.models.audit_log import AuditLog
 from app.models.budget import Budget, BudgetItem
 from app.models.category import Category
 from app.models.credit_card_details import CreditCardDetails
+from app.models.data_correction_run import DataCorrectionRun
 from app.models.linked_account import LinkedAccount, SyncConsentStatus
 from app.models.login_failure import LoginFailure
 from app.models.merchant_category_rule import MerchantCategoryRule
@@ -28,6 +29,7 @@ __all__ = [
     "BudgetItem",
     "Category",
     "CreditCardDetails",
+    "DataCorrectionRun",
     "LinkedAccount",
     "LoginFailure",
     "MerchantCategoryRule",

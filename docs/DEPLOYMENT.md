@@ -49,7 +49,7 @@ domain whose subdomains you fully control.
 |---|---|
 | Runtime | Node.js **≥ 20.9** (Next.js 16's `engines` requirement; verified locally on 24.14) |
 | Package manager | **npm** (`package-lock.json` is committed). Use `npm ci` for reproducible installs. |
-| Install | `npm ci` |
+| Install | `npm ci` (recommended). The Vercel project currently leaves Install Command on auto-detect, which runs `npm install` |
 | Build | `npm run build` (`next build`) |
 | Start | `npm run start` (`next start`). It listens on `$PORT` (defaults to 3000). |
 | Root directory | `frontend/` |
@@ -357,13 +357,13 @@ The rest of the app writes nothing to disk.
 - **Pool:** SQLAlchemy's default async pool (size 5, overflow 10) with `pool_pre_ping=True`.
   That's at most 15 connections per worker, within a small managed plan.
 
-**Migrations.** Alembic runs 16 linear revisions. The head is `a3f9c1d2e7b4`. Run from `backend/`
+**Migrations.** Alembic runs 18 linear revisions. The head is `d7a1e4c9b3f2`. Run from `backend/`
 with the staging `DATABASE_URL` in the environment:
 
 ```bash
 cd backend
 alembic upgrade head      # creates every table and seeds the 14 system categories
-alembic current           # should print: a3f9c1d2e7b4 (head)
+alembic current           # should print: d7a1e4c9b3f2 (head)
 ```
 
 - On a fresh database this is the complete setup. On later deploys, the same command applies
@@ -375,9 +375,9 @@ alembic current           # should print: a3f9c1d2e7b4 (head)
 
 ### Lockstep deploy: credit-card ledger fix (F-001)
 
-> **Status:** the ledger code fix is on branch `fix/credit-card-ledger-semantics`. The
-> data-correction migration it needs is **not written yet**. Don't deploy the ledger fix until
-> that migration exists, has been reviewed, and has been rehearsed on a copy of the target data.
+> **Status:** the ledger code fix and its data-correction migration `c8e4a1f6b2d9` are on branch
+> `fix/credit-card-ledger-semantics`, not deployed. Rehearse the whole procedure on a copy of the
+> target data before running it against production.
 
 **Why lockstep.** Before the fix, card transactions were booked with asset signs: a purchase
 *lowered* the stored amount owed. The fixed code books and reverses card legs as changes to the
@@ -387,37 +387,284 @@ amount owed. Both mixed states are wrong:
   the new sign, doubling the original error.
 - **Old code, corrected data:** every new card transaction is booked with the old, wrong sign.
 
-So the backend must be **stopped** while the correction runs, and the new backend started only
-after it succeeds. The frontend change (labels only, same API) can ship in either order.
+So nothing may write to the ledger while the correction runs, and only the new backend may write
+after it. The frontend change (labels only, same API) can ship in either order.
 
-**Procedure:**
+**What migration `c8e4a1f6b2d9` does.** For each card it computes D (the sum of its legs'
+cash-flow deltas) and corrects the balance by `−2·D`. It computes exactly the per-card figures of
+Part 2 of the impact check, and a test keeps the two in agreement.
+
+- It takes `LOCK TABLE accounts, transactions IN SHARE ROW EXCLUSIVE MODE` (10 s lock timeout),
+  so no write can land between computing D and updating the balance. If a long-running request
+  holds the tables, it fails on the timeout and changes nothing; retry.
+- **Nothing to correct** (no card with D ≠ 0, including a database with no cards): it runs
+  without a flag, changes no balance, and writes one `ledger.card_balance_correction` summary
+  audit row (`mode: none`).
+- **Something to correct:** it refuses unless the operator passes
+  `-x card_balance_correction=apply`.
+- **Cards it refuses even with `apply`** (`blockers` in the audit row): a card with a leg in
+  another currency (`currency_mismatch` -- the account's currency was edited after booking, so D
+  would mix currencies); a card with an `account.balance_updated` audit row
+  (`balance_set_after_ledger_fix` -- only the fixed code writes those, so the old-sign formula
+  doesn't describe the card); or a card with a leg written since a previous run of this revision
+  (`ledger_activity_since_previous_correction` -- see "Re-upgrading after a downgrade"). Reconcile
+  such a card by hand, then exclude it with
+  `-x card_balance_correction_skip=<account id>[,<account id>...]`; "Reconciling a skipped card"
+  below is the procedure. A skipped card is left untouched and gets an
+  `account.balance_correction_skipped` audit row.
+- **Review signals** (reported, not blocking): a credit balance or over-limit balance after
+  correction, or an account row changed more than 60 s after its last ledger write (a possible
+  hand-entered balance under the old code, which kept no audit trail; also triggered by a rename
+  or a deleted transaction). They are recorded in each card's audit row. What they cannot catch
+  is set out in "Limits of detection" below -- read it before treating a clean report as a
+  guarantee.
+- Every corrected card gets an `account.balance_corrected` audit row with the previous balance,
+  D, the correction and the new balance. Transactions are never touched.
+- A refusal raises before any write. Alembic runs every pending revision in one transaction, so
+  the whole run rolls back and `alembic current` is unchanged. An unknown `card_balance_correction*`
+  option, a bad mode value, a skip id with nothing to skip, and offline (`--sql`) mode are refused
+  the same way.
+
+**Zero cards doesn't remove the safeguards.** The production check on 2026-11-22 found no credit
+card accounts and no transactions, so the expected production run is the no-flag, `mode: none`
+path. Nothing is special-cased for that: the migration recomputes everything at deploy time, and
+if a card has been booked since the check it refuses instead of applying a stale conclusion. Other
+databases (staging, restored backups, local databases used while developing this branch, where
+card transactions were booked by the *fixed* code) can legitimately need correction, or must not
+receive it. In those, the flag and the blockers are what stop a wrong correction.
+
+**Render specifics — verified, not assumed.** Checked on 2026-11-22 against the live service
+(Render MCP `list_services`) and Render's docs. Re-check before each deploy; a plan change alters
+which procedure below applies.
+
+| Fact | Value (2026-11-22) | Why it matters |
+|---|---|---|
+| Service | `personal-finance-os`, `srv-db39m7flk1mc739t5g80`, region `singapore` | the target |
+| Instance plan | **`free`**, `numInstances: 1` | decides the procedure (see below) |
+| Deployed branch | `feat/automatic-transaction-sync`, `autoDeploy: yes`, trigger `commit` | any commit on that branch deploys itself |
+| Start command | `alembic upgrade head && uvicorn app.main:app ...` | the migration runs as part of starting the new instance |
+| Health check path | **empty — none configured** | Render does not gate the traffic switch on the app being healthy |
+| Maintenance mode | `enabled: false` | and unavailable on this plan, see next row |
+| Render docs | "Maintenance mode is available only for paid web services." | **maintenance mode cannot be used while the service is on `free`** |
+| Render docs | Free web services have no "Shell access via SSH or the Render Dashboard" and no "Running one-off jobs" | `alembic` cannot be run on Render except via the start command |
+| Render docs | "Render **spins down** a Free web service that goes 15 minutes without receiving any inbound traffic"; ~1 minute to restart | a spun-down service is not a stopped service — it restarts on the next request |
+| Render events (2026-11-14) | a settings change started a deploy (`trigger: service_updated`) | change build command / env vars only while suspended, after the migration (RELEASE_RUNBOOK §6) |
+| Render docs (Python) | `PYTHON_VERSION` is read first and must be fully qualified; services created 2026-02-11 – 2026-10-12 default to 3.14.3 | set `PYTHON_VERSION=3.13.13`; the lock is tested on 3.13 only |
+| Vercel (2026-11-23, `vercel project inspect`) | production branch `feat/automatic-transaction-sync`, root `frontend`, Node 24.x | a push to the Render branch is also a Vercel production deploy |
+| Render docs (deploy order) | the start command runs on the new instance before it receives traffic; traffic switches when it is up; the old instance gets `SIGTERM` 60 s after the switch, then a ~30 s shutdown delay | the **old** backend can keep writing for roughly 90 s after the migration has already committed |
+
+Two consequences follow, and they are why the procedure below is not "merge and watch the deploy":
+
+- **The start-command path cannot stop writes.** The migration commits inside the new instance
+  while the old instance is still serving. Its `LOCK TABLE` only covers its own transaction, so
+  for up to ~90 s afterwards the *old* code can book card legs with the old sign, which the
+  correction was already computed without. On a database with cards to correct that is a silent,
+  per-card wrong balance.
+- **The write-stop this runbook used to name does not exist on this plan.** Earlier revisions said
+  "turn on maintenance mode". On `free` that option is unavailable, and it would not have stopped
+  the new instance either: a service in maintenance mode still serves its private network and SSH,
+  and returns 503 only to the public internet.
+
+**Stopping writes, by plan.** Pick one and record which you used:
+
+- **Free plan (current).** Turn auto-deploy **off**, then **suspend** the service from the Render
+  dashboard. Confirm it actually stopped before touching data: `get_service` must report
+  `"suspended": "suspended"`. Suspending stops the instance, so the migration cannot run from the
+  start command — run it from an operator machine against the database instead (the free plan has
+  no SSH and no one-off jobs, so there is no in-Render alternative). A spin-down is **not** a
+  substitute: the next inbound request wakes the service.
+- **Paid plan.** Turn auto-deploy off, then turn on maintenance mode, and confirm
+  `maintenanceMode.enabled: true`. The start-command path is still exposed to the ~90 s
+  old-instance overlap, so prefer the same out-of-band migration; if you do use the start command,
+  treat Part 3 of the post-migration check as mandatory rather than advisory.
+
+**Procedure (free plan, migration run out of band):**
 
 1. **Measure first, on the old code.** While the target still runs the pre-fix backend, run the
    read-only check `scripts/sql/f001_card_ledger_impact_check.sql` (it is only valid against data
-   booked by the old code). Keep its output with the deploy record.
-   - `cards_needing_correction = 0`: the correction is a no-op for this database.
-   - `cards_negative_after_correction` or `cards_over_limit_after_correction` > 0: likely a manual
-     balance edit. Review those cards (Part 2) before the window.
-   - `currency_mismatch_legs` > 0: stop. The correction formula would mix currencies.
+   booked by the old code). Keep its output with the deploy record. Part 1:
+   - `cards_needing_correction = 0`: no flag is needed.
+   - `correction_minor_by_currency`: the total correction per currency (never summed across
+     currencies), with `cards_with_positive_correction` / `cards_with_negative_correction`.
+     `distinct_card_transactions` counts transactions; `total_card_legs` counts legs (a card →
+     card transfer is one transaction and two legs).
+   - `cards_blocking_migration > 0` (`cards_with_currency_mismatch`,
+     `cards_with_post_fix_balance_edit`, `cards_with_activity_since_previous_correction`):
+     reconcile those cards (Part 2) and plan to skip them — see "Reconciling a skipped card".
+   - `cards_possibly_edited_by_hand`, `cards_negative_after_correction` or
+     `cards_over_limit_after_correction` > 0: review those cards in Part 2 before choosing
+     `apply`, and read "Limits of detection" first.
 2. **Back up.** Take a platform snapshot and/or `pg_dump -Fc` to encrypted storage. Never put the
    dump in the repository's `backups/` folder unencrypted.
-3. **Stop the backend** (suspend the service or scale it to zero), so nothing writes to
-   `accounts` or `transactions` during the window.
-4. **Migrate.** Run `alembic upgrade head`. If any card needs correction, the migration will
-   refuse to run without an explicit operator flag (`-x card_balance_correction=apply`); the
-   exact flags are documented with the migration when it lands. Every corrected card gets an
-   audit row with its previous balance and the correction applied.
-5. **Verify** with `alembic current` and the post-migration check shipped with the migration.
-   Note: re-running the impact check afterwards still shows non-zero D, because D is computed
-   from transactions; that is expected.
-6. **Start the new backend**, then deploy the frontend.
-7. **Smoke test:** a card expense raises the amount owed; a bank → card payment lowers the bank
+3. **Stop writes.** Auto-deploy **off** first (so nothing deploys itself mid-procedure), then
+   suspend the service. **Gate:** `get_service` reports `"suspended": "suspended"`. Record the
+   timestamp.
+4. **Put the new code on the branch without starting it.** Merge or push the migration-containing
+   commit to the deployed branch. With auto-deploy off and the service suspended, nothing runs on
+   Render. **Vercel does deploy it:** its production branch is the same
+   `feat/automatic-transaction-sync`, so this push is also the frontend's production deploy. That
+   is why it happens only while the backend is suspended: the new frontend calls endpoints and
+   fields the old backend lacks (`/auth/delete-account`, `over_limit_minor`). Record the commit
+   SHA — every check below compares against it.
+5. **Migrate out of band.** From an operator machine, with the target `DATABASE_URL` in the
+   environment: `alembic upgrade head`, plus `-x card_balance_correction=apply` only if step 1
+   found cards to correct, plus `-x card_balance_correction_skip=<id>[,<id>]` for each card you
+   reconciled by hand. A refusal changes nothing and leaves the revision unapplied; fix the cause
+   and re-run.
+6. **Verify, still suspended.** `alembic current` prints `d7a1e4c9b3f2 (head)` (the RLS revision
+   ships in the same run; if this procedure is ever used for `c8e4a1f6b2d9` alone, it prints
+   `c8e4a1f6b2d9 (head)`). Run the read-only
+   `scripts/sql/f001_card_ledger_post_migration_check.sql`:
+   - Part 1: the summary row exists, and its `mode`, `cards_corrected`, `cards_skipped` and
+     `correction_minor_by_currency` match step 1.
+   - Part 2: `cards_corrected` / `cards_skipped` match Part 1, and `rows_for_deleted_accounts` is 0.
+   - Part 3: `card_legs_written_in_window` must be **0**. Anything else means something was still
+     writing while writes were meant to be stopped; review the cards it touched before resuming.
+   - Re-running the impact check now still shows non-zero D, because D is computed from
+     transactions. That is expected.
+7. **Resume, but only through the gate below.** Resuming is what exposes users to the new code, so
+   it is the one step with a hard precondition.
+8. **Smoke test:** a card expense raises the amount owed; a bank → card payment lowers the bank
    balance and the amount owed and leaves net worth unchanged.
+9. **Restore the deploy settings.** Turn auto-deploy back on, then deploy the frontend.
+
+**The resume gate.** Do not un-suspend the service (on a paid plan: do not turn maintenance mode
+off) until **every** one of these is true. Each is a fact to read off a tool, not a judgement:
+
+| # | Check | How |
+|---|---|---|
+| 1 | The database is at the migration's revision | `alembic current` prints `d7a1e4c9b3f2 (head)` — never just `c8e4a1f6b2d9 (head)`, because the two revisions ship together |
+| 2 | The post-migration check passed, Part 3 included (`card_legs_written_in_window = 0`) | step 6 |
+| 3 | A deploy exists for **the exact commit from step 4** | `list_deploys` — the newest deploy's `commit.id` equals that SHA |
+| 4 | That deploy's `status` is `live` | `get_deploy` on its id — not `build_in_progress`, not `update_in_progress`, not `deactivated` |
+| 5 | The live backend answers as healthy | `curl -fsS https://personal-finance-os-ug9o.onrender.com/api/v1/health` returns 200 |
+| 6 | The code that is live is the fixed code | the deploy's commit SHA, not "the deploy went green" |
+
+Order matters, and on the free plan it is circular unless read carefully: checks 3–5 need the
+service *running*, but resuming is what you are gating. Resolve it by resuming in two stages —
+un-suspend, then immediately verify 3–5 **before** announcing the service as available and before
+turning auto-deploy back on. Render's docs don't say whether resuming rebuilds the branch's latest
+commit or restarts the last successful deploy (checked 2026-11-23), so expect either. If check 3
+shows the previous commit, use **Manual Deploy → Deploy latest commit** right away and repeat
+checks 3–5 on that deploy. Until it is live, the pre-fix code serves corrected data. That window is
+acceptable only because the step 1 check found **zero credit-card accounts**; with any card, do
+not use this path on the free plan. If any check fails, suspend again; at that point the data is already
+correct and consistent, and the only wrong thing is which code is serving it. Never leave a failed
+deploy serving: on the free plan a failed start command means Render keeps the **previous**
+(pre-fix) image, which is exactly the forbidden "old code, corrected data" state.
+
+**Wire up the health check.** `healthCheckPath` is currently empty, so Render switches traffic to a
+new instance without asking the app whether it is healthy, and check 5 is the only thing standing
+in for that. Set it to `/api/v1/health` so Render gates the switch itself; until then check 5 is
+mandatory and manual.
+
+**Limits of detection.** The impact check and the migration can only see edits that left a trace.
+These leave none, and no amount of re-running the check will surface them:
+
+- **A balance typed in through `PUT /accounts` before this fix shipped.** The
+  `account.balance_updated` audit row is part of *this* fix (decision E), so edits made under the
+  old code wrote nothing to `audit_logs`. Such a balance is not `opening + D`, so `−2·D` moves it
+  to a number wrong by twice the hand-entered difference.
+- **A card transaction deleted under the old code.** The leg is gone from `transactions`, so it is
+  absent from D, but its wrongly-signed effect is still baked into the stored balance.
+- **An edit made within 60 s of a ledger write**, which `updated_after_last_ledger_write` cannot
+  separate from the write itself.
+
+What the signal does and does not mean: `cards_possibly_edited_by_hand` is a *hint*, not a finding
+— a rename, a category change, or a deleted transaction also bumps `accounts.updated_at` past the
+last ledger write. It is noisy in both directions. **Treat a clean report as "no evidence of a
+manual edit", never as proof that none happened.** Practical consequences:
+
+- A card whose corrected balance the user disputes after the deploy is not evidence the migration
+  misbehaved; it may be one of the invisible cases above. The per-card
+  `account.balance_corrected` audit row holds `previous_balance_minor`, `cash_flow_delta_minor`
+  and `correction_minor`, which is enough to reconstruct and undo one card by hand.
+- For any database where users could have edited balances by hand before the fix (not the current
+  production database, which has no cards at all), prefer confirming opening balances with the
+  user over trusting D.
+
+**Reconciling a skipped card.** A blocked card is one the `−2·D` formula does not describe, so its
+correct balance has to be established by hand and set deliberately. For each card in Part 2 of the
+impact check with a non-empty blocker:
+
+1. **Record the evidence** before changing anything: from Part 2, the `account_id`,
+   `stored_balance_minor`, `cash_flow_delta_minor`, `correction_minor`, the blocker columns
+   (`currency_mismatch_legs`, `has_balance_audit`, `legs_since_previous_correction`) and the
+   timestamps. Keep it with the deploy record.
+2. **Work out the true amount owed from the card's own statements**, not from D: start from the
+   opening balance the user confirms, then apply each leg with the owed convention (purchase and
+   cash advance raise it; refund and repayment lower it). The blocker says which legs are suspect:
+   `currency_mismatch` → legs booked in another currency, which must not be summed with the rest;
+   `balance_set_after_ledger_fix` → a `PUT /accounts` balance already set under the fixed code,
+   usually already right; `ledger_activity_since_previous_correction` → legs the fixed backend
+   booked, which are already correct and must be excluded from D.
+3. **Exclude the card from the migration** with
+   `-x card_balance_correction_skip=<account id>[,<account id>...]`. It is left untouched and gets
+   an `account.balance_correction_skipped` audit row recording the blockers and the correction that
+   was *not* applied. Every other card is still corrected in the same run.
+4. **Set the balance afterwards, through the application**, with the new backend live:
+   `PUT /api/v1/accounts/{id}` with the figure from step 2. That writes an
+   `account.balance_updated` audit row (decision E), so the change is attributable, and it keeps
+   the service layer as the only writer of balances. Never `UPDATE accounts` by hand.
+5. **Re-run the impact check** afterwards. The card will still report a non-zero
+   `correction_minor` (D comes from transactions and does not change), so this is not a pass/fail
+   check — what you are confirming is that the card still appears with the same blocker and that
+   no *other* card regressed. Record that you reconciled it, so the next operator does not try to
+   "fix" it again.
 
 **Rollback.** Prefer fixing forward. Card transactions created after the upgrade are booked with
 the new rule, and the old code would reverse them with the wrong sign, so redeploying the old
-backend is not safe on its own. Restoring the snapshot is the last resort: it is only consistent
-because the backend was stopped, and it discards every write made after the snapshot.
+backend is not safe on its own. If the correction itself must be undone,
+`alembic -x card_balance_correction=revert downgrade a3f9c1d2e7b4` subtracts exactly the
+correction recorded for each card, keeping later ledger activity, and writes an
+`account.balance_correction_reverted` audit row. It refuses (changing nothing) for any card whose
+balance was set through `PUT /accounts` after the correction, because reverting would overwrite
+the user's balance. Reconcile it and exclude it with `-x card_balance_correction_skip=...`. With
+nothing recorded (the zero-card case) the downgrade needs no flag and changes nothing.
+
+**Re-upgrading after a downgrade.** Once the revision has run, the fixed backend is live and
+every card leg written from (**the first run** − 60 s) onward is already correct. A second
+upgrade recomputes D over *all* legs, so folding those in would move the balance by twice their
+amount. The migration therefore blocks any such card with
+`ledger_activity_since_previous_correction`, and the impact check counts them in
+`cards_with_activity_since_previous_correction`. This also covers the state production is
+actually in: the first run finds nothing to correct (`mode: none`) but still records that it
+ran, so cards created and used *after* that run are protected too. To re-upgrade, reconcile
+each blocked card by hand and skip it.
+
+**Two records, because one can be deleted.** The guard above is only as good as the evidence
+that the revision already ran, so every run writes that evidence twice, in the same transaction
+as the correction:
+
+| Record | Where | Survives |
+|---|---|---|
+| `ledger.card_balance_correction` summary row (`entity_type: migration`) | `audit_logs` | user deletion (`user_id` is `SET NULL`) |
+| one row per invocation, `direction` `upgrade` / `downgrade` | `data_correction_runs` | a purge of `audit_logs` |
+
+The migration dates the first run from **whichever record is older**, so losing one source does
+not re-arm the double correction. Operational rules that follow from this:
+
+- **Never prune `audit_logs` or `data_correction_runs`.** Nothing in the app deletes audit rows
+  today and there is no retention job; if one is ever added it must exclude the
+  `ledger.card_balance_correction*` actions, and it must not touch `data_correction_runs` at all.
+- **The downgrade does not drop `data_correction_runs`.** That is deliberate asymmetry: a
+  reverted correction still happened, and the next upgrade needs to know. `alembic check` stays
+  clean because `app/models/data_correction_run.py` declares the table, so an autogenerated
+  migration will not propose dropping it. A test asserts that.
+- **Restoring a backup taken before the correction is safe**, because it restores the ledger and
+  the records together: the data is pre-fix again and so is the evidence. The dangerous case is a
+  *partial* restore or purge that removes the records while keeping fixed-code card legs.
+- **If every record of the run is destroyed, nothing can detect it.** No safeguard can tell
+  pre-fix from post-fix data without knowing when the fix went live, so a re-upgrade would then
+  double-count. `backend/tests/test_migration_card_balance_correction.py` pins that limit in
+  `test_guard_is_blind_only_if_every_record_of_the_run_is_destroyed` so nobody mistakes the
+  guard for absolute. Treat the two records as part of the ledger's integrity, not as logs.
+- The impact-check script reads `audit_logs` only, so after an audit purge it can report a card
+  as clean that the migration will still refuse. The migration is the authority; the script is
+  advisory.
+
+Restoring the snapshot is the last resort: it is only consistent because writes were stopped, and
+it discards every write made after the snapshot.
 
 ## 5. Health check
 
@@ -467,7 +714,7 @@ curl -o /dev/null -w "%{http_code}" http://localhost:3100/definitely-not-a-page 
    - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers`.
    - Health check path: `/api/v1/health`. One instance, one worker.
 4. **Run migrations** once against the staging database: `alembic upgrade head`, then confirm
-   `alembic current` shows `a3f9c1d2e7b4 (head)`. A deploy that includes the credit-card ledger
+   `alembic current` shows `d7a1e4c9b3f2 (head)`. A deploy that includes the credit-card ledger
    fix must follow the [lockstep procedure](#lockstep-deploy-credit-card-ledger-fix-f-001)
    instead.
 5. **Frontend service** (root `frontend/`):
@@ -522,6 +769,144 @@ curl -o /dev/null -w "%{http_code}" http://localhost:3100/definitely-not-a-page 
   environment. Nothing in this codebase supports a production Account Aggregator connection.
 - AI categorization of synced transactions is off by default. It needs both `ANTHROPIC_API_KEY`
   and each user's own opt-in.
+
+## 10. Production release procedure
+
+This is the procedure for **every** release to the production stack (Render backend, Vercel
+frontend, Supabase PostgreSQL). A release that contains migration `c8e4a1f6b2d9` (the F-001
+branch) must instead follow the [lockstep procedure](#lockstep-deploy-credit-card-ledger-fix-f-001),
+which replaces steps 3–5 below. Every step that changes production needs the owner's explicit
+approval at the time; nothing here is automatic.
+
+### Release gate (before anything is merged to the deployed branch)
+
+1. **CI is green on the exact commit.** `.github/workflows/ci.yml` runs on every push: backend
+   Ruff, pip-audit, `mypy app`, `alembic upgrade head` on a fresh PostgreSQL 17, a single-head check,
+   `alembic check`, and the full pytest suite; frontend typecheck, ESLint, Vitest, the production
+   build, and `npm audit --audit-level=high`. Render deploys without consulting CI, so this is a
+   check the operator makes, not a gate Render enforces.
+2. **Know which migrations ship.** `alembic history -r <revision live in prod>:head` lists them.
+   Read each one: anything that rewrites data, or that the *old* code can't run against, needs a
+   write-stop (see "Ordering" below).
+3. **Environment variables.** Compare the names in `backend/.env.example` and
+   `frontend/.env.example` against the platform settings. Compare names only; never copy values
+   into tickets, chat, or logs. The backend refuses to start if a required one is missing, and
+   with `ENVIRONMENT=production` it refuses a `*` in `CORS_ORIGINS`, because credentials are
+   always on.
+4. **Dependencies are the tested set.** CI installs with `pip install -c requirements.lock`,
+   and Render must too (build command `pip install -c requirements.lock .`). `pyproject.toml`
+   has only lower bounds, so without the lock a deploy picks whatever is newest that day. The
+   project requires Python 3.13 (`backend/.python-version`). Don't rely on that file on Render:
+   Render's docs place `.python-version` at the *repository* root, and the service builds from
+   `backend/`. Set the service's `PYTHON_VERSION` environment variable instead, which Render
+   checks first and which must be fully qualified (`3.13.13`, not `3.13`). Without it, this
+   service (created 2026-10-07) defaults to Python 3.14.3, which the lock was not tested on.
+5. **Supabase's Data API must not reach the app's tables.** The backend talks to PostgreSQL
+   directly and never uses Supabase's REST/GraphQL API. As of 2026-11-22, production's Data API
+   (PostgREST) was running, every `public` table had RLS disabled, and `anon`/`authenticated`
+   held full table privileges, including through default privileges for new tables. So anyone
+   with the project's publishable key could read or rewrite every row. Migration
+   `d7a1e4c9b3f2` closes this at the database (see "Supabase Data API containment" below). Before
+   each release, confirm the Data API is off or `public` is not exposed, and once the migration
+   has run, that RLS is enabled on every table.
+
+### Ordering
+
+Render's start command runs `alembic upgrade head` on the **new** instance, and the old instance
+keeps serving for about 90 s after the traffic switch (see "Render specifics" above). So:
+
+- **Additive migrations** (new tables, nullable columns, new indexes): the normal path below is
+  safe, because the old code ignores what it doesn't know about.
+- **Destructive or data-rewriting migrations**, or ones the old code can't run against: stop
+  writes first (auto-deploy off, suspend), migrate out of band, then resume, as in the lockstep
+  procedure. Never rely on the start command for these.
+- **Frontend after backend** when the frontend needs a new endpoint or field. A labels-only
+  frontend change can ship in either order.
+
+### Normal release (no write-stop needed)
+
+1. **Back up.** Take a `pg_dump -Fc` of the production database to encrypted storage outside the
+   repository. Check the Supabase dashboard's backup page for what the current plan retains, and
+   don't assume a platform backup exists until you've seen it listed there.
+2. **Merge to the deployed branch** (`feat/automatic-transaction-sync` as of 2026-11-22; re-check
+   in Render). With auto-deploy on, this starts the Render deploy.
+3. **Watch the deploy.** In the Render deploy log, `alembic upgrade head` must log each expected
+   revision and then uvicorn must start. A failed start command leaves the previous image
+   serving, so a red deploy is not an outage, but the migration may have committed. Check
+   `alembic current` before retrying.
+4. **Verify the live backend:**
+   - `curl -i https://<backend>/api/v1/health` returns 200 with the envelope, and an
+     `X-Request-Id` header.
+   - The deploy's commit SHA in Render matches the commit you merged.
+5. **The frontend deploys itself.** Vercel's production branch is the same branch, so step 2
+   already started a Vercel production deploy; confirm it is Ready and built the merged commit
+   (`vercel inspect <deployment url> --logs` shows `Commit: <sha>`). Then check
+   `curl -I https://<frontend>/` for `Content-Security-Policy`, `Strict-Transport-Security`,
+   `X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff`.
+6. **Smoke test in a browser:** log in, reload and stay signed in, add an expense, see it on the
+   dashboard, then log out.
+
+### Rollback
+
+| What shipped | How to roll back |
+|---|---|
+| Frontend only | Vercel: promote the previous production deployment (instant, no data impact). |
+| Backend code, no migration | Render: redeploy the previous successful deploy. |
+| Backend with an additive migration | Redeploy the previous code. Old code ignores the new schema, so leave the migration applied and fix forward. |
+| Backend with a data-rewriting migration | Don't redeploy old code over migrated data. Follow that migration's own documented downgrade (for `c8e4a1f6b2d9`, the "Rollback" paragraph of the lockstep section). |
+| Anything, as a last resort | Restore the step-1 dump. That discards every write since it was taken, so it's only consistent if writes were stopped. |
+
+### Supabase Data API containment
+
+**Status (2026-11-22): verified read-only, not yet contained.** Production's PostgREST was
+running, all 20 `public` tables had RLS off, and `anon`/`authenticated` held every table
+privilege. The backend does not depend on the Data API at all: it connects to PostgreSQL through
+`DATABASE_URL` as `postgres`, uses its own JWT auth (not Supabase Auth), and stores receipts on
+local disk or S3 (not Supabase Storage). No frontend code or dependency talks to Supabase.
+
+Two independent layers close it. Do the first immediately; the second ships with the release.
+The beginner-friendly, step-by-step version, with the expected result of each step, is
+[RELEASE_RUNBOOK.md](RELEASE_RUNBOOK.md) §1.
+
+1. **Turn the Data API off (dashboard, reversible, no code).**
+   - Supabase Dashboard → project `zomkpjmpodescgprigxr` (check the ref in the URL; staging is
+     `ghzgqdbeqoklktnocvet`) → **Integrations → Data API** → turn **Enable Data API** off. If you
+     would rather keep it on, open the project's **API settings** and remove `public` from
+     **Exposed schemas** instead.
+   - Verify from any machine with the PowerShell commands in
+     [RELEASE_RUNBOOK.md](RELEASE_RUNBOOK.md) §1. They read the project's **publishable/anon** key
+     (Project Settings → API Keys) without echoing it; never use the secret/service_role key here.
+     Anything other than 200 means the endpoint no longer serves the table. A 200 with a JSON
+     array means it is still reachable.
+   - Check **Logs → API Gateway** filtered to paths starting `/rest/v1/` for requests you didn't
+     make. That's the only evidence of whether the exposure was used.
+   - Effect on the app: none, because the backend's database connection doesn't go through the
+     Data API. Undo by turning the toggle back on.
+2. **Migration `d7a1e4c9b3f2` (database, with the release).** It revokes every `anon`/
+   `authenticated` privilege (table, sequence, function, and default privileges for future
+   objects), enables RLS on every table with no policies, and verifies both before committing.
+   It needs no flag and runs in the same `alembic upgrade head` as `c8e4a1f6b2d9`, so it rides
+   the lockstep procedure above. The owner-connected backend is unaffected (tested). Downgrade
+   keeps the protection unless `-x rls_hardening=revert`, and never re-grants.
+   - Verify afterwards (read-only):
+     `SELECT count(*) FILTER (WHERE NOT relrowsecurity) AS without_rls, bool_or(has_table_privilege('anon', oid, 'SELECT')) AS anon_can_read FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r';`
+     Expect `0` and `false`.
+3. **After both, because the exposure existed:** have the one production user change their
+   password (this revokes every session), and treat the data as possibly read. This is a
+   production write and needs explicit approval.
+
+### Logging, monitoring and error reporting (what exists today)
+
+- **Logs:** the backend logs to stdout, which Render collects. Every request gets an id (inbound
+  `X-Request-Id` if well-formed, else a fresh uuid4). It is returned in the `X-Request-Id`
+  response header and stamped on every `app.*` log line, so a user-reported failure can be traced
+  from its response header to the server traceback. Secrets, tokens, and request bodies are not
+  logged.
+- **Health:** `/api/v1/health` is liveness only (section 5). Render's health-check path is not yet
+  configured on the service (see "Wire up the health check").
+- **Not in place:** no alerting on errors or downtime, no uptime monitor, and no remote error
+  reporting (Sentry or similar) for either the backend or the browser. Until one is added, the
+  operator watches the Render log stream and the smoke test after each release.
 
 ## Staging limitations (as of this document)
 
