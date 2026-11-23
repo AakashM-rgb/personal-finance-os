@@ -6,16 +6,35 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api.v1.router import api_router
+from app.core.body_limit import RequestBodyLimitMiddleware
 from app.core.config import get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_app_logging
 from app.core.rate_limit import limiter
+from app.core.request_id import HEADER_NAME, new_request_id, sanitize, set_request_id
 
 configure_app_logging()
 
 settings = get_settings()
 
-app = FastAPI(title="Finance App API", version="0.1.0")
+
+class _FinanceApp(FastAPI):
+    def build_middleware_stack(self) -> ASGIApp:
+        # Starlette always places ServerErrorMiddleware outside every
+        # add_middleware() entry, and it sends the 500 for an unhandled
+        # exception straight to the server's `send`. Anything added with
+        # add_middleware() therefore never sees that response, so the
+        # request id and security headers would be missing from exactly the
+        # response a user most needs to quote. Wrapping the built stack puts
+        # both outside ServerErrorMiddleware and CORS, so every response -
+        # 500s and CORS preflights included - carries them. The body limit
+        # sits just inside them, so a 413 carries them too.
+        return RequestIdMiddleware(
+            SecurityHeadersMiddleware(RequestBodyLimitMiddleware(super().build_middleware_stack()))
+        )
+
+
+app = _FinanceApp(title="Finance App API", version="0.1.0")
 
 # Note: SlowAPIMiddleware (Starlette BaseHTTPMiddleware) is deliberately not
 # added. It is not required for the per-route @limiter.limit(...) decorators
@@ -23,6 +42,41 @@ app = FastAPI(title="Finance App API", version="0.1.0")
 # and BaseHTTPMiddleware's task-per-request model is incompatible with the
 # asyncpg driver's event-loop binding.
 app.state.limiter = limiter
+
+
+class RequestIdMiddleware:
+    """Gives every request a correlation id, reuses a trusted proxy's own id
+    when one is supplied, and echoes it back as a response header so a user
+    can quote it in a bug report (see app.core.request_id).
+
+    Plain ASGI middleware for the same reason as SecurityHeadersMiddleware
+    below: BaseHTTPMiddleware's task-per-request model is incompatible with
+    the asyncpg driver's event-loop binding. Running in the same task is also
+    what lets the ContextVar set here stay visible to the handler.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        incoming = None
+        for raw_name, raw_value in scope.get("headers", []):
+            if raw_name.decode("latin-1").lower() == HEADER_NAME.lower():
+                incoming = raw_value.decode("latin-1")
+                break
+        request_id = sanitize(incoming) or new_request_id()
+        set_request_id(request_id)
+
+        async def send_with_request_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)[HEADER_NAME] = request_id
+            await send(message)
+
+        await self.app(scope, receive, send_with_request_id)
 
 
 class SecurityHeadersMiddleware:
@@ -61,8 +115,6 @@ class SecurityHeadersMiddleware:
 
         await self.app(scope, receive, send_with_headers)
 
-
-app.add_middleware(SecurityHeadersMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,0 +1,149 @@
+name: CI
+
+# Runs the same checks a release is gated on locally, so a regression is
+# caught on the branch rather than after a Render auto-deploy. Render deploys
+# from a commit without consulting this workflow, so a green run here is a
+# precondition the operator checks, not an automatic gate (see
+# docs/DEPLOYMENT.md, "The resume gate").
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        # The app requires PostgreSQL: timestamptz, partial unique indexes,
+        # ARRAY and date_trunc(..., 'UTC'). There is no SQLite fallback.
+        # 17 matches production (Supabase, 17.11 on 2026-11-22); the RLS
+        # migration checks the MAINTAIN privilege only from 17 onward.
+        image: postgres:17
+        env:
+          POSTGRES_USER: finance
+          POSTGRES_PASSWORD: finance
+          POSTGRES_DB: finance_app_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Test-only values. Real secrets live in the hosting platform's
+      # environment and are never needed by CI.
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://finance:finance@localhost:5432/finance_app_test
+      TEST_DATABASE_URL: postgresql+asyncpg://finance:finance@localhost:5432/finance_app_test
+      JWT_SECRET_KEY: ci-only-not-a-real-secret-0123456789abcdef
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: "15"
+      REFRESH_TOKEN_EXPIRE_DAYS: "30"
+      CORS_ORIGINS: http://localhost:3000
+      LOGIN_RATE_LIMIT: 5/minute
+      REGISTER_RATE_LIMIT: 5/minute
+      # tests/test_rls_hardening.py creates Supabase's anon/authenticated roles
+      # when it may (CI's postgres user is a superuser) and otherwise skips.
+      # In CI a skip would hide a broken security migration, so make it fail.
+      REQUIRE_SUPABASE_ROLE_TESTS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          # No requirements.txt exists, and `working-directory` doesn't apply
+          # to `uses:` steps, so name the dependency file explicitly.
+          cache-dependency-path: |
+            backend/pyproject.toml
+            backend/requirements.lock
+
+      - name: Install
+        # pip first: pip-audit audits the whole environment, including pip
+        # itself, and the runner image's pip can lag behind security fixes.
+        # Runtime dependencies are pinned by requirements.lock, the same
+        # constraints Render installs with, so CI tests what ships.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -c requirements.lock -e ".[dev]"
+
+      - name: Ruff
+        run: ruff check app tests migrations
+
+      - name: Dependency audit (pip-audit)
+        # Audits what was actually installed above, which is what Render's
+        # `pip install .` resolves too (no lockfile). Fails on any known
+        # vulnerability; nothing is ignored. The project itself isn't on PyPI
+        # and is reported as skipped, which doesn't fail the step.
+        run: |
+          pip install pip-audit
+          pip-audit --progress-spinner off
+
+      - name: mypy
+        # `app` only: the test suite has a known backlog of missing
+        # annotations (see docs/TESTING.md), so gating on the whole tree
+        # would fail every run for reasons unrelated to the change.
+        run: mypy app
+
+      - name: Alembic upgrade head
+        run: alembic upgrade head
+
+      - name: Alembic single head
+        run: |
+          heads="$(alembic heads)"
+          echo "$heads"
+          test "$(echo "$heads" | grep -c '(head)')" -eq 1
+
+      - name: Alembic check (models match migrations)
+        run: alembic check
+
+      - name: pytest
+        run: pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Audit (fail on high or critical)
+        # Moderate findings in dev-only transitive packages should not block a
+        # release; an exploitable high or critical must.
+        run: npm audit --audit-level=high

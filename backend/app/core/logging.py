@@ -14,6 +14,8 @@ record such as the AI tool-call audit trail (app.ai.tools.registry).
 
 import logging
 
+from app.core.request_id import get_request_id
+
 _FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 # Every attribute a plain LogRecord carries by default - used to detect
@@ -41,10 +43,28 @@ class _WithExtrasFormatter(logging.Formatter):
         return f"{base} | {rendered}"
 
 
+class _RequestIdFilter(logging.Filter):
+    """Stamps the current request's correlation id onto every app.* record,
+    so no call site has to remember to pass it. Records logged outside a
+    request (startup, a background job) simply carry no request_id, rather
+    than a misleading placeholder.
+
+    A filter rather than a formatter change: the extras renderer above picks
+    it up automatically, and anything that swaps the handler's formatter
+    still gets the id."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        request_id = get_request_id()
+        if request_id is not None:
+            record.request_id = request_id
+        return True
+
+
 def configure_app_logging(level: int = logging.INFO) -> None:
     app_logger = logging.getLogger("app")
     app_logger.setLevel(level)
     if not app_logger.handlers:
         handler = logging.StreamHandler()
         handler.setFormatter(_WithExtrasFormatter(_FORMAT))
+        handler.addFilter(_RequestIdFilter())
         app_logger.addHandler(handler)

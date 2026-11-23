@@ -65,7 +65,10 @@ class RateLimitedError(AppError):
     code = "rate_limited"
 
 
-def _envelope(code: str, message: str, field_errors: dict[str, Any] | None = None) -> dict:
+_HTTP_ERROR_CODES = {404: "not_found", 413: "payload_too_large"}
+
+
+def error_envelope(code: str, message: str, field_errors: dict[str, Any] | None = None) -> dict:
     error = {"code": code, "message": message, "field_errors": field_errors}
     return {"data": None, "error": error, "meta": None}
 
@@ -75,7 +78,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content=_envelope(exc.code, exc.message, exc.field_errors),
+            content=error_envelope(exc.code, exc.message, exc.field_errors),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -88,28 +91,30 @@ def register_exception_handlers(app: FastAPI) -> None:
             field_errors[field or "body"] = error["msg"]
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content=_envelope("validation_error", "One or more fields are invalid.", field_errors),
+            content=error_envelope(
+                "validation_error", "One or more fields are invalid.", field_errors
+            ),
         )
 
     @app.exception_handler(RateLimitExceeded)
     async def handle_rate_limit(request: Request, exc: RateLimitExceeded) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content=_envelope("rate_limited", "Too many requests. Please try again shortly."),
+            content=error_envelope("rate_limited", "Too many requests. Please try again shortly."),
         )
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        code = "not_found" if exc.status_code == 404 else "http_error"
+        code = _HTTP_ERROR_CODES.get(exc.status_code, "http_error")
         message = exc.detail if isinstance(exc.detail, str) else "Request failed."
-        return JSONResponse(status_code=exc.status_code, content=_envelope(code, message))
+        return JSONResponse(status_code=exc.status_code, content=error_envelope(code, message))
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content=_envelope(
+            content=error_envelope(
                 "internal_error",
                 "Something went wrong on our end. Please try again.",
             ),
